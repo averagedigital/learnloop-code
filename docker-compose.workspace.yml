@@ -1,0 +1,65 @@
+services:
+  code-server:
+    image: codercom/code-server:latest
+    command: --auth none "${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
+    ports:
+      - "${CODE_SERVER_PORT:-8080}:8080"
+    volumes:
+      - "${CODELEARN_WORKSPACE_MOUNT:-./workspace}:${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
+    environment:
+      PASSWORD: ""
+
+  openhands:
+    image: ghcr.io/all-hands-ai/openhands:latest
+    ports:
+      - "${OPENHANDS_PORT:-3000}:3000"
+    volumes:
+      - "${CODELEARN_WORKSPACE_MOUNT:-./workspace}:${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
+    environment:
+      SANDBOX_WORKSPACE_BASE: "${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
+      WORKSPACE_MOUNT_PATH: "${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
+      LLM_API_KEY: "${YANDEX_AI_STUDIO_API_KEY:-}"
+      LLM_MODEL: "${OPENHANDS_LLM_MODEL:-}"
+      LLM_BASE_URL: "${YANDEX_AI_STUDIO_BASE_URL:-https://ai.api.cloud.yandex.net/v1}"
+
+  falkordb:
+    image: falkordb/falkordb:latest
+    ports:
+      - "${FALKORDB_PORT:-6379}:6379"
+    volumes:
+      - falkordb-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  graph-memory:
+    build:
+      context: .
+      dockerfile: memory_service/Dockerfile
+    ports:
+      - "${GRAPH_MEMORY_PORT:-8008}:8008"
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: 6379
+      GRAPH_MEMORY_PORT: 8008
+      GRAPHITI_LLM_PROVIDER: "${GRAPHITI_LLM_PROVIDER:-auto}"
+      GRAPHITI_STRUCTURED_OUTPUT_MODE: "${GRAPHITI_STRUCTURED_OUTPUT_MODE:-json_object}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_ADMIN_KEY: "${OPENAI_ADMIN_KEY:-}"
+      YANDEX_AI_STUDIO_API_KEY: "${YANDEX_AI_STUDIO_API_KEY:-}"
+      YANDEX_AI_STUDIO_FOLDER_ID: "${YANDEX_AI_STUDIO_FOLDER_ID:-}"
+      YANDEX_AI_STUDIO_BASE_URL: "${YANDEX_AI_STUDIO_BASE_URL:-https://ai.api.cloud.yandex.net/v1}"
+      YANDEX_GRAPHITI_MODEL: "${YANDEX_GRAPHITI_MODEL:-}"
+      YANDEX_GRAPHITI_SMALL_MODEL: "${YANDEX_GRAPHITI_SMALL_MODEL:-}"
+      YANDEX_GRAPHITI_EMBEDDING_URL: "${YANDEX_GRAPHITI_EMBEDDING_URL:-https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding}"
+      YANDEX_GRAPHITI_EMBEDDING_MODEL: "${YANDEX_GRAPHITI_EMBEDDING_MODEL:-}"
+      YANDEX_GRAPHITI_EMBEDDING_DIM: "${YANDEX_GRAPHITI_EMBEDDING_DIM:-256}"
+      YANDEX_GRAPHITI_MAX_TOKENS: "${YANDEX_GRAPHITI_MAX_TOKENS:-4096}"
+    depends_on:
+      falkordb:
+        condition: service_healthy
+
+volumes:
+  falkordb-data:

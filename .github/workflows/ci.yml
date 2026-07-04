@@ -1,0 +1,9 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  node-check:
+    uses: averagedigital/cicd_templates/.github/workflows/node-check.yml@main

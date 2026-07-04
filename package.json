@@ -1,0 +1,31 @@
+{
+  "name": "coding_linteral",
+  "version": "1.0.0",
+  "description": "Local coding-practice trainer with LLM-generated lessons and deterministic checks.",
+  "main": "server.mjs",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "server": "node server.mjs",
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "runtime:workspace": "docker compose -f docker-compose.workspace.yml up code-server openhands",
+    "runtime:project": "test -n \"$CODELEARN_PROJECT_ID\" && CODELEARN_WORKSPACE_MOUNT=\"${CODELEARN_WORKSPACE_ROOT:-./workspace}/$CODELEARN_PROJECT_ID\" CODELEARN_WORKSPACE_CONTAINER_PATH=\"/workspaces/$CODELEARN_PROJECT_ID\" docker compose -f docker-compose.workspace.yml up code-server openhands",
+    "runtime:memory": "docker compose -f docker-compose.workspace.yml up falkordb graph-memory",
+    "runtime:all": "docker compose -f docker-compose.workspace.yml up code-server openhands falkordb graph-memory",
+    "runtime:down": "docker compose -f docker-compose.workspace.yml down",
+    "test": "node tests/self-check.mjs && node tests/persistence-api-check.mjs && python3 tests/memory-service-check.py"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.0.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "vite": "^8.1.2"
+  }
+}
