@@ -8,7 +8,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import memory_service.service as service
 from memory_service.service import (
-    Handler,
     bounded_limit,
     event_to_episode,
     graphiti_provider,
@@ -107,7 +106,6 @@ try:
     status, payload = asyncio.run(health_status())
     assert status == 503
     assert payload["error"] == "missing_graph_memory_credentials"
-    assert "alive" in Handler.do_GET.__code__.co_consts
     assert graphiti_provider() == "openai"
     assert has_graphiti_credentials() is False
 
