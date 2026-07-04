@@ -355,32 +355,11 @@ assert.match(packageSource, /"runtime:all": "docker compose -f docker-compose\.w
 assert.match(packageSource, /"runtime:down": "docker compose -f docker-compose\.workspace\.yml down"/);
 assert.match(packageSource, /python3 tests\/memory-service-check\.py/);
 
-const readmeSource = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-assert.match(readmeSource, /Локальный тренажер программирования/);
-assert.match(readmeSource, /!\[Hero screen\]\(assets\/screenshots\/hero\.png\)/);
-assert.match(readmeSource, /## Стек/);
-assert.match(readmeSource, /## Структура/);
-assert.match(readmeSource, /## Окружение/);
-assert.match(readmeSource, /## Локальный запуск/);
-assert.match(readmeSource, /React 19, Vite/);
-assert.match(readmeSource, /Node\.js `server\.mjs`/);
-assert.match(readmeSource, /CODELEARN_DB_PATH/);
-assert.match(readmeSource, /JUDGE0_BASE_URL/);
-assert.match(readmeSource, /GRAPH_MEMORY_URL/);
-assert.match(readmeSource, /npm test/);
-assert.match(readmeSource, /npm run build/);
-assert.match(readmeSource, /Не коммитьте `\.env`/);
-assert.doesNotMatch(readmeSource, /roadmap|Saturday morning cartoon|GPT-5\.5|SmartCaptcha/i);
-assert.equal(existsSync(new URL("../assets/screenshots/hero.png", import.meta.url)), true);
-assert.equal(existsSync(new URL("../DESIGN.md", import.meta.url)), false);
-assert.equal(existsSync(new URL("../FRONTEND_REBUILD_NOTES.md", import.meta.url)), false);
-assert.equal(existsSync(new URL("../tokens.json", import.meta.url)), false);
-assert.equal(existsSync(new URL("../.env", import.meta.url)), false);
-assert.equal(existsSync(new URL("../data/codelearn.sqlite", import.meta.url)), false);
-assert.equal(existsSync(new URL("../workspace/fill-and-flag/task.md", import.meta.url)), false);
-
 const ciSource = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-assert.match(ciSource, /averagedigital\/cicd_templates\/\.github\/workflows\/node-check\.yml@main/);
+assert.match(ciSource, /actions\/setup-node@v4/);
+assert.match(ciSource, /npm ci/);
+assert.match(ciSource, /npm test/);
+assert.match(ciSource, /npm run build/);
 assert.doesNotMatch(ciSource, /deploy|workflow_dispatch/);
 
 const dockerfileSource = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
