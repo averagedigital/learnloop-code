@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile, writeFile, mkdir, readdir, lstat, realpath } from "node:fs/promises";
+import { chmod, readFile, writeFile, mkdir, readdir, lstat, realpath } from "node:fs/promises";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -388,6 +388,7 @@ async function appSettings(req, res) {
     "providerId",
     "providerBaseUrl",
     "providerModel",
+    "profileName",
     "mascotId",
     "mascotAssistantSettings",
     "workspaceRuntime",
@@ -398,6 +399,9 @@ async function appSettings(req, res) {
     "sandboxMemoryMb"
   ]);
   const body = await readJson(req);
+  if (body.profileName !== undefined && (typeof body.profileName !== "string" || body.profileName.trim().length < 2 || body.profileName.trim().length > 80 || hasLineBreak(body.profileName))) {
+    return sendJson(res, 400, { error: "invalid_profile_name" });
+  }
   if (body.providerId !== undefined && !providerEnv[String(body.providerId || "")]) return sendJson(res, 400, { error: "invalid_provider_id" });
   if (body.mascotId !== undefined && !mascotIds.has(String(body.mascotId))) return sendJson(res, 400, { error: "invalid_mascot_id" });
   if (body.mascotAssistantSettings !== undefined && !validMascotSettings(body.mascotAssistantSettings)) return sendJson(res, 400, { error: "invalid_mascot_settings" });
@@ -422,7 +426,7 @@ async function appSettings(req, res) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
   for (const [key, value] of Object.entries(body)) {
     if (!allowed.has(key)) continue;
-    updated[key] = String(value);
+    updated[key] = key === "profileName" ? String(value).trim() : String(value);
     stmt.run(key, updated[key]);
   }
   if (body.providerApiKeys) {
@@ -1542,7 +1546,8 @@ async function writeEnvValue(name, value) {
   const line = `${name}=${value}`;
   const pattern = new RegExp(`^${escapeRegExp(name)}=.*$`, "m");
   text = pattern.test(text) ? text.replace(pattern, line) : `${text}${text.endsWith("\n") || !text ? "" : "\n"}${line}\n`;
-  await writeFile(envPath, text, "utf8");
+  await writeFile(envPath, text, { encoding: "utf8", mode: 0o600 });
+  await chmod(envPath, 0o600);
   process.env[name] = value;
 }
 
