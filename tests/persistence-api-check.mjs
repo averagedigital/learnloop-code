@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -843,6 +843,8 @@ try {
     body: JSON.stringify({
       providerId: "openrouter",
       providerModel: "test-model",
+      profileName: "Алексей",
+      mascotId: "05_laptop_spiky",
       providerApiKeys: { openai: "oa-test-openai", openrouter: "sk-test-secret", yandex: "sk-test-yandex" },
       yandexFolderId: "folder-secret-123",
       workspaceRuntime: "code-server",
@@ -855,6 +857,7 @@ try {
     })
   });
   assert.equal(settingsSave.providerStatus.openrouter.configured, true);
+  assert.equal(settingsSave.settings.profileName, "Алексей");
   assert.equal(settingsSave.providerStatus.openrouter.masked, "sk-t...cret");
   assert.equal(settingsSave.providerStatus.openai.configured, true);
   assert.equal(settingsSave.providerStatus.openai.masked, "oa-t...enai");
@@ -871,6 +874,14 @@ try {
   assert.equal(savedEnvMap.YANDEX_AI_STUDIO_API_KEY, "sk-test-yandex");
   assert.equal(savedEnvMap.YANDEX_AI_STUDIO_FOLDER_ID, "folder-secret-123");
   assert.notEqual(savedEnvMap.OPENROUTER_API_KEY, "old-value");
+  assert.equal((await stat(envPath)).mode & 0o777, 0o600);
+  const invalidProfileName = await fetch(`http://127.0.0.1:${port}/api/settings`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ profileName: "x".repeat(81) })
+  });
+  assert.equal(invalidProfileName.status, 400);
+  assert.equal((await invalidProfileName.json()).error, "invalid_profile_name");
   const unknownProviderId = await fetch(`http://127.0.0.1:${port}/api/settings`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -1016,6 +1027,8 @@ try {
   assert.equal(state.progress[taskId].hintIndex, 2);
   assert.equal(state.settings.providerId, "openrouter");
   assert.equal(state.settings.providerModel, "test-model");
+  assert.equal(state.settings.profileName, "Алексей");
+  assert.equal(state.settings.mascotId, "05_laptop_spiky");
   assert.equal(state.settings.workspaceRuntime, "code-server");
   assert.equal(state.settings.workspaceRuntimeUrl, `http://127.0.0.1:${agentPort}`);
   assert.equal(state.settings.agentRuntimeUrl, `http://127.0.0.1:${agentPort}`);

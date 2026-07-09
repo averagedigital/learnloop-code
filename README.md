@@ -4,6 +4,16 @@
 
 ![Hero screen](assets/screenshots/hero.png)
 
+## Интерфейс
+
+### Чат с LLM-куратором
+
+![Чатовый интерфейс CodeLearnML](assets/screenshots/chat.jpg)
+
+### Профиль и активность
+
+![Годовая активность пользователя](assets/screenshots/activity.jpg)
+
 ## Стек
 
 - Frontend: React 19, Vite.
