@@ -30,6 +30,7 @@ export function assistantMarkdownToHtml(markdown) {
   const html = [];
   let paragraph = [];
   let list = [];
+  let listTag = "ul";
   let inCode = false;
   let codeLang = "";
   let code = [];
@@ -41,7 +42,7 @@ export function assistantMarkdownToHtml(markdown) {
   };
   const flushList = () => {
     if (!list.length) return;
-    html.push(`<ul>${list.map((item) => `<li>${inlineMarkdown(item)}</li>`).join("")}</ul>`);
+    html.push(`<${listTag}>${list.map((item) => `<li>${inlineMarkdown(item)}</li>`).join("")}</${listTag}>`);
     list = [];
   };
   const flushCode = () => {
@@ -50,7 +51,8 @@ export function assistantMarkdownToHtml(markdown) {
     codeLang = "";
   };
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (line.startsWith("```")) {
       if (inCode) {
         flushCode();
@@ -72,6 +74,23 @@ export function assistantMarkdownToHtml(markdown) {
       flushList();
       continue;
     }
+    const tableHeaders = markdownTableCells(line);
+    const tableDivider = markdownTableCells(lines[index + 1] || "");
+    if (tableHeaders && tableDivider?.length === tableHeaders.length && tableDivider.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+      flushParagraph();
+      flushList();
+      const rows = [];
+      index += 2;
+      while (index < lines.length) {
+        const cells = markdownTableCells(lines[index]);
+        if (!cells || cells.length !== tableHeaders.length) break;
+        rows.push(cells);
+        index += 1;
+      }
+      index -= 1;
+      html.push(`<div class="markdownTableWrap"><table><thead><tr>${tableHeaders.map((cell) => `<th>${inlineMarkdown(cell)}</th>`).join("")}</tr></thead><tbody>${rows.map((cells) => `<tr>${cells.map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+      continue;
+    }
     const heading = line.match(/^(#{1,3})\s+(.+)$/);
     if (heading) {
       flushParagraph();
@@ -81,9 +100,13 @@ export function assistantMarkdownToHtml(markdown) {
       continue;
     }
     const bullet = line.match(/^\s*[-*]\s+(.+)$/);
-    if (bullet) {
+    const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
+    if (bullet || ordered) {
       flushParagraph();
-      list.push(bullet[1]);
+      const nextListTag = ordered ? "ol" : "ul";
+      if (list.length && listTag !== nextListTag) flushList();
+      listTag = nextListTag;
+      list.push((ordered || bullet)[1]);
       continue;
     }
     paragraph.push(line.trim());
@@ -93,6 +116,12 @@ export function assistantMarkdownToHtml(markdown) {
   flushParagraph();
   flushList();
   return html.join("") || "<p>Ответ пуст.</p>";
+}
+
+function markdownTableCells(line) {
+  const value = String(line || "").trim();
+  if (!value.includes("|")) return null;
+  return value.replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
 }
 
 export function buildMascotAssistantPrompt(question, context) {

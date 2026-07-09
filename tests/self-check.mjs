@@ -111,14 +111,33 @@ assert.match(appSource, /КОД/);
 assert.match(appSource, /ПИШЕМ/);
 assert.match(appSource, /Реди/);
 assert.doesNotMatch(appSource, /Начать практику/);
+assert.match(appSource, /activeTab/);
+assert.match(appSource, /assistantMarkdownToHtml/);
+assert.match(appSource, /requestJson/);
+assert.match(appSource, /chatHistory/);
+assert.match(appSource, /startNewChat/);
+assert.match(appSource, /selectChat/);
+assert.match(appSource, /handleComposerKeyDown/);
+assert.match(appSource, /dangerouslySetInnerHTML/);
+assert.match(appSource, /window\.location\.hash/);
+assert.match(appSource, /\/api\/app-state/);
+assert.match(appSource, /\/api\/runtime\/health/);
+assert.match(appSource, /\/api\/assistant\/chats/);
+assert.match(appSource, /\/api\/responses/);
+assert.match(appSource, /buildProviderPayload/);
+assert.match(appSource, /chatComposer/);
+assert.match(appSource, /Куратор LLM/);
+assert.match(appSource, /Чем займёмся с кодом\?/);
+assert.match(appSource, /chatMascot/);
+assert.doesNotMatch(appSource, /seedMessages|toolPanel|sidebarSearch|chatTheme/);
 assert.match(appSource, /Маскот-наставник CodeLearnML/);
 assert.match(appSource, /mascotPeek/);
 assert.match(appSource, /aria-hidden="true"/);
-assert.doesNotMatch(appSource, /useEffect|useMemo|useRef/);
+assert.doesNotMatch(appSource, /useMemo/);
 assert.doesNotMatch(appSource, /navItems|quickPrompts|assistantQuickPrompts/);
 assert.doesNotMatch(appSource, /function Start|function Session|function Workspace|function Progress|function Settings/);
-assert.doesNotMatch(appSource, /fetch\("\/api\/responses"|fetch\("\/api\/models"|fetch\("\/api\/settings"|fetch\("\/api\/runtime\/health"/);
-assert.doesNotMatch(appSource, /workspaceWorkbench|sessionComposer|agentPromptBox|agentTimeline|toolCallCard|MemoryPanel|Markdown/);
+assert.doesNotMatch(appSource, /fetch\("\/api\/models"|fetch\("\/api\/settings"/);
+assert.doesNotMatch(appSource, /workspaceWorkbench|sessionComposer|agentPromptBox|agentTimeline|toolCallCard|MemoryPanel/);
 assert.doesNotMatch(appSource, /Dashboard|Practice|Studio|ProfileDialog|progressRail|OrganicArtifact|Delaunay|gsap/);
 assert.doesNotMatch(appSource, /mascotCaption|paintChip|mascotStage|organic_spiky_concept/);
 assert.doesNotMatch(appSource, /sampleLesson|demoTasks|createMemoryStore\(localStorage\)|localStorage/);
@@ -131,6 +150,18 @@ assert.match(appStyles, /--color-buttery-yellow: #f9cc73/);
 assert.match(appStyles, /--color-lilac-shadow: #61609a/);
 assert.match(appStyles, /--color-bone-white: #f9f5f2/);
 assert.match(appStyles, /\.heroPoster/);
+assert.match(appStyles, /\.appShell/);
+assert.match(appStyles, /\.chatMode/);
+assert.match(appStyles, /\.chatSidebar/);
+assert.match(appStyles, /\.chatHistory/);
+assert.match(appStyles, /\.chatTopbar/);
+assert.match(appStyles, /\.chatMascot/);
+assert.match(appStyles, /\.chatEmpty/);
+assert.match(appStyles, /\.chatMarkdown/);
+assert.match(appStyles, /\.chatSurface/);
+assert.match(appStyles, /\.chatMessage/);
+assert.match(appStyles, /\.chatComposer/);
+assert.match(appStyles, /\.composerError/);
 assert.match(appStyles, /\.heroTitle/);
 assert.match(appStyles, /\.headlineStack/);
 assert.match(appStyles, /\.posterAction/);
@@ -143,7 +174,7 @@ assert.match(appStyles, /animation: mascotFrames/);
 assert.match(appStyles, /border-radius: 100px/);
 assert.match(appStyles, /font-feature-settings: "calt" 0/);
 assert.match(appStyles, /@media \(prefers-reduced-motion: reduce\)/);
-assert.doesNotMatch(appStyles, /linear-gradient|radial-gradient|box-shadow|drop-shadow|backdrop-filter|glass|workspaceWorkbench|sessionLayout|settingsGrid|progressLayout|mascotCaption|paintChip|mascotStage/);
+assert.doesNotMatch(appStyles, /drop-shadow|backdrop-filter|glass|workspaceWorkbench|sessionLayout|settingsGrid|progressLayout|mascotCaption|paintChip|mascotStage/);
 assert.doesNotMatch(appStyles, /progressMarker/);
 assert.doesNotMatch(appSource, /sampleLesson/);
 assert.doesNotMatch(appSource, /demoTasks/);
@@ -315,6 +346,13 @@ const unsafeMarkdown = assistantMarkdownToHtml(`# Заголовок
 
 - пункт
 
+1. первый
+2. второй
+
+| Файл | Статус |
+| --- | --- |
+| app.js | готов |
+
 \`\`\`js
 const x = "<tag>";
 \`\`\`
@@ -322,6 +360,10 @@ const x = "<tag>";
 <script>alert(1)</script>`);
 assert.match(unsafeMarkdown, /<h3>Заголовок<\/h3>/);
 assert.match(unsafeMarkdown, /<li>пункт<\/li>/);
+assert.match(unsafeMarkdown, /<ol><li>первый<\/li><li>второй<\/li><\/ol>/);
+assert.match(unsafeMarkdown, /<table>/);
+assert.match(unsafeMarkdown, /<th>Файл<\/th>/);
+assert.match(unsafeMarkdown, /<td>готов<\/td>/);
 assert.match(unsafeMarkdown, /data-language="js"/);
 assert.match(unsafeMarkdown, /&lt;tag&gt;/);
 assert.doesNotMatch(unsafeMarkdown, /<script>/);
