@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { assistantMarkdownToHtml, buildMascotAssistantPrompt, extractAssistantText } from "../src/mascot-assistant.js";
-import { buildActivityCalendar, buildActivityEvents, buildMemoryGraph, profileMascotFrameSrc } from "../src/profile.js";
+import { buildActivityCalendar, buildActivityEvents, buildMemoryGraph, fitMemoryGraphView, panMemoryGraphView, profileMascotFrameSrc, zoomMemoryGraphView } from "../src/profile.js";
 import { buildAdaptiveDrillPrompt, buildCodebaseLessonPrompt, buildLessonPrompt, buildModelListRequest, buildProviderPayload, buildSkillGraphPrompt, buildSocraticHintPrompt, buildTeamLeadTaskPrompt, buildTutorPrompt, createMemoryStore, gradeByLessonSpec, llmTools, modelControlPrompt, parseGeneratedJson, personalityTemplate, providers, sampleLesson, toolsForProvider, validateLessonSpec } from "../src/platform.js";
 
 globalThis.performance = { now: () => 10 };
@@ -142,8 +142,48 @@ const memoryGraph = buildMemoryGraph([
 assert.equal(memoryGraph.nodes.length, 3);
 assert.equal(memoryGraph.edges.length, 2);
 assert.equal(memoryGraph.nodes[0].id, "CodeLearnML");
-assert.equal(memoryGraph.nodes[0].x, 480);
 assert.equal(memoryGraph.edges[0].from.id, "CodeLearnML");
+assert.deepEqual(buildMemoryGraph([
+  { uuid: "edge-1", subject: "CodeLearnML", relation: "uses", object: "FalkorDB", fact: "Uses FalkorDB" },
+  { uuid: "edge-2", subject: "CodeLearnML", relation: "stores", object: "direct triples", fact: "Stores direct triples" }
+]), memoryGraph);
+
+function boxesOverlap(left, right, gap = 0) {
+  return left.x - gap < right.x + right.width && left.x + left.width + gap > right.x && left.y - gap < right.y + right.height && left.y + left.height + gap > right.y;
+}
+
+for (const edgeCount of [1, 4, 15, 24]) {
+  const graph = buildMemoryGraph(Array.from({ length: edgeCount }, (_, index) => ({
+    uuid: `edge-${index}`,
+    subject: index % 3 === 0 ? "user" : `subject-${index}`,
+    relation: `relation-${index}`,
+    object: `object-${index}`,
+    fact: `Полный сохранённый факт ${index}`,
+    createdAt: `2026-07-10T12:${String(index).padStart(2, "0")}:00.000Z`,
+    groupId: "codelearn-local"
+  })), 24);
+  assert.equal(graph.edges.length, edgeCount);
+  for (let left = 0; left < graph.nodes.length; left += 1) {
+    assert.ok(graph.nodes[left].width > 0 && graph.nodes[left].height > 0);
+    for (let right = left + 1; right < graph.nodes.length; right += 1) {
+      assert.equal(boxesOverlap(graph.nodes[left], graph.nodes[right], 8), false, `node collision at ${edgeCount} edges`);
+    }
+  }
+  for (const edge of graph.edges) {
+    assert.equal(graph.nodes.some((node) => boxesOverlap(edge.labelBox, node, 4)), false, `edge label overlaps a node at ${edgeCount} edges`);
+    assert.equal(edge.fact, `Полный сохранённый факт ${edge.index}`);
+  }
+}
+
+const dedupedGraph = buildMemoryGraph([
+  { uuid: "one", subject: "user", relation: "prefers", object: "Rust", fact: "one" },
+  { uuid: "two", subject: "user", relation: "uses", object: "Rust", fact: "two" }
+]);
+assert.equal(dedupedGraph.nodes.filter((node) => node.id === "user").length, 1);
+assert.equal(dedupedGraph.nodes.filter((node) => node.id === "Rust").length, 1);
+assert.deepEqual(fitMemoryGraphView(memoryGraph), { x: 0, y: 0, width: memoryGraph.width, height: memoryGraph.height });
+assert.ok(zoomMemoryGraphView(fitMemoryGraphView(memoryGraph), 2, memoryGraph).width < memoryGraph.width);
+assert.ok(panMemoryGraphView(fitMemoryGraphView(memoryGraph), 100, 100, memoryGraph).x >= 0);
 assert.equal(profileMascotFrameSrc("05_laptop_spiky", "thinking", 13), "/assets/mascots/05_laptop_spiky/frames/thinking/frame_02.png");
 assert.equal(profileMascotFrameSrc("organic_spiky_concept", "typing", 23), "/assets/mascots/organic_spiky_concept/frames/typing/frame_24.png");
 

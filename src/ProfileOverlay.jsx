@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { providers } from "./platform.js";
-import { buildActivityCalendar, buildActivityEvents, buildMemoryGraph, profileAvatarSrc } from "./profile.js";
+import { buildActivityCalendar, buildActivityEvents, buildMemoryGraph, fitMemoryGraphView, panMemoryGraphView, profileAvatarSrc, zoomMemoryGraphView } from "./profile.js";
 
 const sections = [
   { id: "overview", label: "Обзор", hint: "Активность и контекст" },
@@ -61,53 +61,160 @@ function profileDate(value) {
 
 function MemoryGraph({ items }) {
   const graph = buildMemoryGraph(items);
+  const [view, setView] = useState(() => fitMemoryGraphView(graph));
+  const [selection, setSelection] = useState(null);
+  const dragRef = useRef(null);
+
+  useEffect(() => {
+    setView(fitMemoryGraphView(graph));
+    setSelection(null);
+  }, [items]);
+
+  function zoom(factor, anchor) {
+    setView((current) => zoomMemoryGraphView(current, factor, graph, anchor));
+  }
+
+  function resetView() {
+    setView(fitMemoryGraphView(graph));
+  }
+
+  function beginPan(event) {
+    if (event.target.closest("[data-graph-selectable]")) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    dragRef.current = { x: event.clientX, y: event.clientY, view, width: bounds.width, height: bounds.height };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function movePan(event) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const dx = (event.clientX - drag.x) * (drag.view.width / Math.max(1, drag.width));
+    const dy = (event.clientY - drag.y) * (drag.view.height / Math.max(1, drag.height));
+    setView(panMemoryGraphView(drag.view, -dx, -dy, graph));
+  }
+
+  function handleWheel(event) {
+    event.preventDefault();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    zoom(event.deltaY < 0 ? 1.16 : 1 / 1.16, {
+      x: (event.clientX - bounds.left) / Math.max(1, bounds.width),
+      y: (event.clientY - bounds.top) / Math.max(1, bounds.height)
+    });
+  }
+
+  function handleKeyboard(event) {
+    const step = Math.max(24, view.width * 0.08);
+    const actions = {
+      ArrowLeft: () => setView((current) => panMemoryGraphView(current, -step, 0, graph)),
+      ArrowRight: () => setView((current) => panMemoryGraphView(current, step, 0, graph)),
+      ArrowUp: () => setView((current) => panMemoryGraphView(current, 0, -step, graph)),
+      ArrowDown: () => setView((current) => panMemoryGraphView(current, 0, step, graph)),
+      "+": () => zoom(1.2),
+      "=": () => zoom(1.2),
+      "-": () => zoom(1 / 1.2),
+      "0": resetView
+    };
+    if (!actions[event.key]) return;
+    event.preventDefault();
+    actions[event.key]();
+  }
+
+  function selectFromKeyboard(event, value) {
+    if (!["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    setSelection(value);
+  }
+
+  const selectedEdges = selection?.type === "node"
+    ? graph.edges.filter((edge) => edge.subject === selection.node.id || edge.object === selection.node.id)
+    : selection?.type === "edge" ? [selection.edge] : [];
+
   return (
-    <div className="memoryGraphViewport">
-      <svg className="memoryGraph" viewBox="0 0 960 520" role="img" aria-label={`Граф памяти: ${graph.nodes.length} сущностей, ${graph.edges.length} связей`}>
+    <div className="memoryGraphWorkspace">
+      <div className="memoryGraphToolbar" aria-label="Управление графом">
+        <button type="button" onClick={() => zoom(1.2)} aria-label="Приблизить граф">+</button>
+        <button type="button" onClick={() => zoom(1 / 1.2)} aria-label="Отдалить граф">−</button>
+        <button type="button" onClick={resetView}>Весь граф</button>
+        <span>Колесо/трекпад · drag · стрелки · +/− · 0</span>
+      </div>
+      <div className="memoryGraphViewport" tabIndex="0" onKeyDown={handleKeyboard}>
+      <svg
+        className="memoryGraph"
+        viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`}
+        role="img"
+        aria-label={`Граф памяти: ${graph.nodes.length} сущностей, ${graph.edges.length} связей`}
+        onPointerDown={beginPan}
+        onPointerMove={movePan}
+        onPointerUp={() => { dragRef.current = null; }}
+        onPointerCancel={() => { dragRef.current = null; }}
+        onWheel={handleWheel}
+      >
         <defs>
           <marker id="memory-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" />
           </marker>
         </defs>
         <g className="memoryGraphEdges">
-          {graph.edges.map((edge) => {
-            const dx = edge.to.x - edge.from.x;
-            const dy = edge.to.y - edge.from.y;
-            const distance = Math.max(1, Math.hypot(dx, dy));
-            const unitX = dx / distance;
-            const unitY = dy / distance;
-            const startX = edge.from.x + unitX * 92;
-            const startY = edge.from.y + unitY * 34;
-            const endX = edge.to.x - unitX * 98;
-            const endY = edge.to.y - unitY * 34;
-            const bend = edge.index % 2 === 0 ? -18 : 18;
-            const middleX = (startX + endX) / 2;
-            const middleY = (startY + endY) / 2 + bend;
-            const relation = compactGraphText(edge.relation, 20);
-            const labelWidth = Math.max(64, Math.min(168, relation.length * 7 + 22));
-            return (
-              <g key={`${edge.uuid || edge.index}:${edge.subject}:${edge.object}`}>
+          {graph.edges.map((edge) => (
+              <g
+                className={selection?.type === "edge" && selection.edge.index === edge.index ? "selected" : ""}
+                data-graph-selectable="edge"
+                key={`${edge.uuid || edge.index}:${edge.subject}:${edge.object}`}
+                role="button"
+                tabIndex="0"
+                aria-label={`${edge.subject}: ${edge.relation} ${edge.object}`}
+                onClick={() => setSelection({ type: "edge", edge })}
+                onKeyDown={(event) => selectFromKeyboard(event, { type: "edge", edge })}
+              >
                 <title>{edge.fact}</title>
-                <path d={`M ${startX} ${startY} Q ${middleX} ${middleY + bend} ${endX} ${endY}`} markerEnd="url(#memory-arrow)" />
-                <g className="memoryEdgeLabel" transform={`translate(${middleX - labelWidth / 2} ${middleY - 13})`}>
-                  <rect width={labelWidth} height="26" rx="13" />
-                  <text x={labelWidth / 2} y="17" textAnchor="middle">{relation}</text>
+                <path d={`M ${edge.start.x} ${edge.start.y} Q ${edge.control.x} ${edge.control.y} ${edge.end.x} ${edge.end.y}`} markerEnd="url(#memory-arrow)" />
+                <g className="memoryEdgeLabel" transform={`translate(${edge.labelBox.x} ${edge.labelBox.y})`}>
+                  <rect width={edge.labelBox.width} height={edge.labelBox.height} rx="13" />
+                  <text x={edge.labelBox.width / 2} y="17" textAnchor="middle">{edge.relationLabel}</text>
                 </g>
               </g>
-            );
-          })}
+          ))}
         </g>
         <g className="memoryGraphNodes">
           {graph.nodes.map((node, index) => (
-            <g className={index === 0 ? "memoryNode hub" : "memoryNode"} key={node.id} transform={`translate(${node.x - 90} ${node.y - 28})`}>
+            <g
+              className={`${index === 0 ? "memoryNode hub" : "memoryNode"}${selection?.type === "node" && selection.node.id === node.id ? " selected" : ""}`}
+              data-graph-selectable="node"
+              key={node.id}
+              transform={`translate(${node.x} ${node.y})`}
+              role="button"
+              tabIndex="0"
+              aria-label={`Сущность ${node.id}, связей: ${node.degree}`}
+              onClick={() => setSelection({ type: "node", node })}
+              onKeyDown={(event) => selectFromKeyboard(event, { type: "node", node })}
+            >
               <title>{node.id}</title>
-              <rect width="180" height="56" rx="16" />
+              <rect width={node.width} height={node.height} rx="16" />
               <circle cx="20" cy="28" r="4" />
               <text x="34" y="33">{compactGraphText(node.id)}</text>
             </g>
           ))}
         </g>
       </svg>
+      </div>
+      {selection ? (
+        <aside className="memoryGraphInspector" aria-live="polite">
+          <header>
+            <div><span>{selection.type === "node" ? "Сущность" : "Связь"}</span><strong>{selection.type === "node" ? selection.node.id : selection.edge.relation}</strong></div>
+            <button type="button" onClick={() => setSelection(null)} aria-label="Закрыть инспектор">×</button>
+          </header>
+          {selectedEdges.map((edge) => (
+            <dl key={`${edge.uuid || edge.index}:inspector`}>
+              <div><dt>Subject</dt><dd>{edge.subject}</dd></div>
+              <div><dt>Relation</dt><dd>{edge.relation}</dd></div>
+              <div><dt>Object</dt><dd>{edge.object}</dd></div>
+              <div className="fact"><dt>Сохранённый факт</dt><dd>{edge.fact}</dd></div>
+              {edge.createdAt ? <div><dt>Дата</dt><dd>{profileDate(edge.createdAt)}</dd></div> : null}
+              {edge.groupId ? <div><dt>Источник / группа</dt><dd>{edge.groupId}</dd></div> : null}
+            </dl>
+          ))}
+        </aside>
+      ) : null}
     </div>
   );
 }
