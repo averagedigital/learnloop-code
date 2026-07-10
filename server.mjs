@@ -1078,7 +1078,7 @@ async function runtimeHealth(_req, res) {
 async function readRuntimeHealth() {
   const workspaceUrl = readSetting("workspaceRuntimeUrl") || process.env.WORKSPACE_RUNTIME_URL || "http://127.0.0.1:8080";
   const agentUrl = readSetting("agentRuntimeUrl") || process.env.AGENT_RUNTIME_URL || "http://127.0.0.1:3000";
-  const judgeUrl = process.env.JUDGE0_BASE_URL || "";
+  const judgeUrl = judge0BaseUrl();
   const graphUrl = graphMemoryBaseUrl();
   const [workspace, agent, judge, graph] = await Promise.all([
     runtimeProbe("workspace", workspaceUrl, ""),
@@ -1087,6 +1087,10 @@ async function readRuntimeHealth() {
     runtimeProbe("graphMemory", graphUrl, "/health")
   ]);
   return { ok: [workspace, agent, judge, graph].every((item) => !item.configured || item.ok), workspace, agent, judge, graph };
+}
+
+function judge0BaseUrl() {
+  return String(process.env.JUDGE0_BASE_URL || "https://ce.judge0.com").trim();
 }
 
 async function runtimeStart(req, res) {
@@ -2529,8 +2533,7 @@ async function executeCode(req, res) {
   const publicChecks = body.public_checks === undefined ? [] : body.public_checks;
   if (!Array.isArray(publicChecks)) return sendJson(res, 400, { error: "invalid_public_checks" });
   if (!validPublicChecks(publicChecks)) return sendJson(res, 413, { error: "public_checks_too_large" });
-  if (!String(process.env.JUDGE0_BASE_URL || "").trim()) return sendJson(res, 400, { error: "sandbox_not_configured" });
-  if (!httpServiceUrl(process.env.JUDGE0_BASE_URL)) return sendJson(res, 400, { error: "invalid_sandbox_url" });
+  if (!httpServiceUrl(judge0BaseUrl())) return sendJson(res, 400, { error: "invalid_sandbox_url" });
   sendJson(res, 200, await runSandbox(source, publicChecks, {
     cpuTimeSec: positiveNumber(process.env.SANDBOX_CPU_TIME_SEC || body.cpu_time_sec, 2),
     memoryKb: positiveNumber(process.env.SANDBOX_MEMORY_KB, positiveNumber(body.memory_mb, 256) * 1024)
@@ -2538,8 +2541,7 @@ async function executeCode(req, res) {
 }
 
 async function runSandbox(source, publicChecks, limits = {}) {
-  const judgeUrl = String(process.env.JUDGE0_BASE_URL || "").trim();
-  if (!judgeUrl) throw new ProviderStreamError("sandbox_not_configured");
+  const judgeUrl = judge0BaseUrl();
   const sandboxUrl = httpServiceUrl(judgeUrl);
   if (!sandboxUrl) throw new ProviderStreamError("invalid_sandbox_url");
   const cpuTimeSec = limits.cpuTimeSec || positiveNumber(process.env.SANDBOX_CPU_TIME_SEC, 2);
@@ -2558,7 +2560,7 @@ async function runSandbox(source, publicChecks, limits = {}) {
       cpu_time_limit: cpuTimeSec,
       wall_time_limit: wallTimeSec,
       memory_limit: memoryKb,
-      max_processes_and_or_threads: Number(process.env.SANDBOX_MAX_PROCESSES || 1),
+      max_processes_and_or_threads: Number(process.env.SANDBOX_MAX_PROCESSES || 16),
       max_file_size: 1024,
       enable_network: String(process.env.SANDBOX_NETWORK_ENABLED || "false") === "true"
     })
@@ -2800,8 +2802,8 @@ import io
 import json
 import traceback
 
-source = ${JSON.stringify(source)}
-checks = ${JSON.stringify(publicChecks)}
+source = ${asciiJson(source)}
+checks = ${asciiJson(publicChecks)}
 stdout = io.StringIO()
 stderr = io.StringIO()
 namespace = {}
@@ -2826,7 +2828,7 @@ if status == "passed":
         try:
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 exec(check.get("code", ""), namespace)
-            results.append({"name": check.get("message", "check"), "passed": True, "message": "прошла"})
+            results.append({"name": check.get("message", "check"), "passed": True, "message": "passed"})
         except AssertionError as error:
             status = "test_failure"
             category = "test_failure"
@@ -2841,7 +2843,7 @@ print(json.dumps({
     "stdout": stdout.getvalue(),
     "stderr": stderr.getvalue(),
     "public_test_results": results,
-    "hidden_test_summary": "Скрытые проверки не раскрываются.",
+    "hidden_test_summary": "Hidden checks are not exposed.",
     "category": category
 }, ensure_ascii=False))
 `;
@@ -2851,8 +2853,8 @@ function javascriptSandboxScript(source, publicChecks) {
   return `
 const assert = require("node:assert/strict");
 const vm = require("node:vm");
-const source = ${JSON.stringify(source)};
-const checks = ${JSON.stringify(publicChecks)};
+const source = ${asciiJson(source)};
+const checks = ${asciiJson(publicChecks)};
 const logs = [];
 const context = vm.createContext({ assert, console: { log: (...items) => logs.push(items.join(" ")), error: (...items) => logs.push(items.join(" ")) } });
 const results = [];
@@ -2872,7 +2874,7 @@ if (status === "passed") {
   for (const check of checks) {
     try {
       vm.runInContext(check.code || "", context, { timeout: 1000 });
-      results.push({ name: check.message || "check", passed: true, message: "прошла" });
+      results.push({ name: check.message || "check", passed: true, message: "passed" });
     } catch (error) {
       status = error?.code === "ERR_ASSERTION" ? "test_failure" : "runtime_error";
       category = status;
@@ -2881,8 +2883,12 @@ if (status === "passed") {
   }
 }
 
-console.log(JSON.stringify({ status, stdout: logs.join("\\n"), stderr, public_test_results: results, hidden_test_summary: "Скрытые проверки не настроены.", category }));
+console.log(JSON.stringify({ status, stdout: logs.join("\\n"), stderr, public_test_results: results, hidden_test_summary: "Hidden checks are not configured.", category }));
 `;
+}
+
+function asciiJson(value) {
+  return JSON.stringify(value).replace(/[^\x20-\x7e]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 function parseSandboxResult(data) {
