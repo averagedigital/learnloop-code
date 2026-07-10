@@ -645,12 +645,15 @@ assert.match(styleSource, /@media \(prefers-reduced-motion: reduce\)/);
 assert.doesNotMatch(styleSource, /ingredientBurger|ingredientCookbook|ingredientKnife|composerMedia|heroTicket|workspaceSolo|progressRail|agentRail|workspaceWorkbench|sessionLayout/);
 
 const packageSource = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+const readmeSource = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 assert.match(packageSource, /"vite"/);
 assert.match(packageSource, /"react"/);
 assert.match(packageSource, /"@vitejs\/plugin-react"/);
 assert.doesNotMatch(packageSource, /"d3-delaunay"|"gsap"|"three"|"@react-three\/fiber"|"@react-three\/drei"/);
 assert.match(packageSource, /"server": "node server\.mjs"/);
-assert.match(packageSource, /"start": "npm run runtime:all && node server\.mjs"/);
+assert.match(packageSource, /"start": "npm install && npm run build && npm run runtime:all && node server\.mjs"/);
+assert.match(readmeSource, /npm start/);
+assert.match(readmeSource, /установит Node\.js-зависимости, соберёт frontend, поднимет Docker runtime и запустит backend/);
 assert.match(packageSource, /"runtime:workspace": "docker compose -f docker-compose\.workspace\.yml up code-server openhands"/);
 assert.match(packageSource, /"runtime:project": "test -n \\".*CODELEARN_PROJECT_ID.*CODELEARN_WORKSPACE_MOUNT/);
 assert.match(packageSource, /"runtime:memory": "docker compose -f docker-compose\.workspace\.yml up falkordb graph-memory"/);

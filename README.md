@@ -29,12 +29,14 @@
 - Python 3.12+ для `tests/memory-service-check.py` и опционального memory service.
 - Docker для container/runtime workflows.
 
-## Установка
+## Запуск
 
 ```sh
-npm install
+npm start
 ```
 
+Команда установит Node.js-зависимости, соберёт frontend, поднимет Docker runtime и запустит backend на `http://127.0.0.1:4173`.
+Для первого запуска Docker скачает необходимые образы; последующие запуски используют локальный cache.
 
 Основные переменные:
 
@@ -48,7 +50,7 @@ npm install
 - `WORKSPACE_RUNTIME_URL`, `AGENT_RUNTIME_URL` - URL опционального workspace и agent runtime.
 
 
-## Локальный запуск
+## Раздельный запуск для разработки
 
 Frontend dev server:
 
