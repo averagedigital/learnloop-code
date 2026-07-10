@@ -219,7 +219,7 @@ function MemoryGraph({ items }) {
   );
 }
 
-export default function ProfileOverlay({ open, onClose, app, runtime, requestJson, onSettingsSaved, onRuntimeUpdated }) {
+export default function ProfileOverlay({ open, onClose, app, runtime, requestJson, onSettingsSaved, onRuntimeUpdated, onSectionChange, onOpened }) {
   const dialogRef = useRef(null);
   const [section, setSection] = useState("overview");
   const [search, setSearch] = useState("");
@@ -259,9 +259,15 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
 
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (open && dialog && !dialog.open) dialog.showModal();
-    if (!open && dialog?.open) dialog.close();
-  }, [open]);
+    if (open && dialog && !dialog.open) {
+      dialog.showModal();
+      onOpened?.(dialog);
+    }
+    if (!open && dialog?.open) {
+      dialog.close();
+      onOpened?.(document.body);
+    }
+  }, [onOpened, open]);
 
   useEffect(() => {
     if (!open || personalityLoaded) return;
@@ -298,6 +304,10 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
       cancelled = true;
     };
   }, [graphRefreshKey, open, requestJson, section]);
+
+  useEffect(() => {
+    if (open) onSectionChange?.(section);
+  }, [onSectionChange, open, section]);
 
   const activity = buildActivityCalendar(app);
   const activityEvents = buildActivityEvents(app);

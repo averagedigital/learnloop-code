@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { assistantMarkdownToHtml, buildMascotAssistantPrompt, extractAssistantText } from "../src/mascot-assistant.js";
+import { assistantMarkdownToHtml, buildMascotAssistantPrompt, clampMascotSettings, extractAssistantText, normalizeMascotContext } from "../src/mascot-assistant.js";
 import { buildActivityCalendar, buildActivityEvents, buildMemoryGraph, fitMemoryGraphView, panMemoryGraphView, profileMascotFrameSrc, zoomMemoryGraphView } from "../src/profile.js";
 import { buildAdaptiveDrillPrompt, buildCodebaseLessonPrompt, buildLessonPrompt, buildModelListRequest, buildProviderPayload, buildSkillGraphPrompt, buildSocraticHintPrompt, buildTeamLeadTaskPrompt, buildTutorPrompt, createMemoryStore, gradeByLessonSpec, llmTools, modelControlPrompt, parseGeneratedJson, personalityTemplate, providers, sampleLesson, toolsForProvider, validateLessonSpec } from "../src/platform.js";
 
@@ -108,12 +108,13 @@ const yandexModelList = buildModelListRequest(providers[2]);
 assert.deepEqual(yandexModelList.envHeaders, { "x-folder-id": "YANDEX_AI_STUDIO_FOLDER_ID" });
 
 assert.equal(toolsForProvider("openai-chat-compatible")[0].type, "function");
-assert.equal(toolsForProvider("openai-chat-compatible")[0].function.name, "create_test");
-assert.deepEqual(toolsForProvider("openai-chat-compatible").map((tool) => tool.function.name), ["create_test", "remember_context"]);
-assert.equal(toolsForProvider("openai-chat-compatible")[0].function.parameters.properties.questions.minItems, 4);
-assert.equal(toolsForProvider("openai-responses")[0].parameters.properties.questions.maxItems, 15);
-assert.equal(toolsForProvider("openai-responses")[1].parameters.properties.memories.maxItems, 4);
-assert.deepEqual(toolsForProvider("openai-responses")[1].parameters.properties.memories.items.required, ["category", "text", "subject", "relation", "object"]);
+assert.equal(toolsForProvider("openai-chat-compatible")[0].function.name, "create_task");
+assert.deepEqual(toolsForProvider("openai-chat-compatible").map((tool) => tool.function.name), ["create_task", "create_test", "remember_context"]);
+assert.deepEqual(toolsForProvider("openai-chat-compatible")[0].function.parameters.properties.language.enum, ["python", "javascript"]);
+assert.equal(toolsForProvider("openai-chat-compatible")[1].function.parameters.properties.questions.minItems, 4);
+assert.equal(toolsForProvider("openai-responses")[1].parameters.properties.questions.maxItems, 15);
+assert.equal(toolsForProvider("openai-responses")[2].parameters.properties.memories.maxItems, 4);
+assert.deepEqual(toolsForProvider("openai-responses")[2].parameters.properties.memories.items.required, ["category", "text", "subject", "relation", "object"]);
 
 const activity = buildActivityCalendar({
   taskLogs: [{ updatedAt: "2026-07-08T09:00:00.000Z" }],
@@ -231,9 +232,16 @@ assert.doesNotMatch(appSource, /Разбери этот код и объясни
 assert.doesNotMatch(appSource, /Куратор LLM<\/strong>/);
 assert.match(appSource, /sidebarHandle/);
 assert.match(appSource, /<div className="sidebarHeader">[\s\S]*className="sidebarHandle"/);
-assert.match(appSource, /activeTab === "tests" \? "Сохранённые тесты" : "Сохранённые чаты"/);
+assert.match(appSource, /activeTab === "tasks" \? "Сохранённые задачи" : "Сохранённые чаты"/);
 assert.match(appSource, /activeTab === "tests" \? tests\.map/);
+assert.match(appSource, /activeTab === "tasks" \? tasks\.map/);
 assert.match(appSource, /onClick=\{\(\) => openTest\(test\.id\)\}/);
+assert.match(appSource, /onClick=\{\(\) => openTask\(task\.id\)\}/);
+assert.match(appSource, />Запустить код<\/button>/);
+assert.match(appSource, /Ревью LLM/);
+assert.match(appSource, /taskTutorMascot/);
+assert.match(appSource, /Проведи ревью текущего решения/);
+assert.doesNotMatch(appSource, />Submit<\/button>/);
 assert.match(appSource, /activeTab === "chat" \? <button className="newChatButton"/);
 assert.doesNotMatch(appSource, /className="testPicker"/);
 assert.match(appSource, /composerMascot/);
@@ -372,7 +380,7 @@ assert.match(mascotAssistantSource, /pointerdown/);
 assert.match(mascotAssistantSource, /pointermove/);
 assert.match(mascotAssistantSource, /openAfterPointer/);
 assert.match(mascotAssistantSource, /const shouldSave = widget\.moved/);
-assert.match(mascotAssistantSource, /const minX = window\.innerWidth > 720 \? 112 : EDGE/);
+assert.match(mascotAssistantSource, /const minX = desktop \? 112 : EDGE/);
 assert.match(mascotAssistantSource, /DRAG_THRESHOLD = 8/);
 assert.match(mascotAssistantSource, /mascotAssistantResize/);
 assert.match(mascotAssistantSource, /mascotAssistantIcon/);
@@ -385,6 +393,57 @@ assert.match(mascotAssistantSource, /noopener noreferrer/);
 assert.match(mascotAssistantSource, /externalAssistantUrl/);
 assert.match(mascotAssistantSource, /OpenHands agent/);
 assert.match(mascotAssistantSource, /mascotAssistantAgentFrame/);
+assert.deepEqual(normalizeMascotContext({
+  surface: "task",
+  taskId: "task-1",
+  testId: "must-not-leak",
+  question: "Исправить функцию",
+  status: "failed",
+  executionEvidence: {
+    status: "failed",
+    feedback: "Один public check не прошёл",
+    stdout: "visible output",
+    stderr: "visible error",
+    publicChecks: [{ name: "empty input", passed: false, hiddenAnswer: "secret" }],
+    hiddenChecks: [{ answer: "secret" }],
+    hostPath: "/private/workspace/task-1"
+  },
+  settings: { providerApiKey: "secret" },
+  dom: "<body>secret</body>"
+}), {
+  surface: "task",
+  taskId: "task-1",
+  question: "Исправить функцию",
+  status: "failed",
+  executionEvidence: {
+    status: "failed",
+    feedback: "Один public check не прошёл",
+    stdout: "visible output",
+    stderr: "visible error",
+    publicChecks: [{ name: "empty input", passed: false }]
+  }
+});
+assert.deepEqual(normalizeMascotContext({ surface: "unknown", testId: "test-1" }), { surface: "chat" });
+assert.deepEqual(clampMascotSettings({ x: -100, y: 999, size: 400 }, { width: 390, height: 844, dialogOpen: false }), { x: 12, y: 642, size: 190 });
+assert.deepEqual(clampMascotSettings({ x: 1300, y: -2, size: 100 }, { width: 1366, height: 768, dialogOpen: true }), { x: 1254, y: 12, size: 100 });
+assert.match(appSource, /initMascotAssistant/);
+assert.match(appSource, /\/api\/assistant\/respond\/stream/);
+assert.match(appSource, /mascotAssistantSettings/);
+assert.match(appSource, /surface:\s*"graph-memory"/);
+assert.match(mascotAssistantSource, /event\.key === "Enter"/);
+assert.match(mascotAssistantSource, /event\.key === " "/);
+assert.match(mascotAssistantSource, /reasoning_delta/);
+assert.match(mascotAssistantSource, /tool_start/);
+assert.match(mascotAssistantSource, /popover: "manual"/);
+assert.match(mascotAssistantSource, /export function raiseMascotAssistant/);
+assert.match(appSource, /onOpened=\{raiseMascotAssistant\}/);
+assert.match(appSource, /function isMascotChat/);
+assert.match(appSource, /!chat\.taskId && !isMascotChat\(chat\)/);
+assert.match(appSource, /history\.find\(\(chat\) => !chat\.taskId && !isMascotChat\(chat\)\)/);
+assert.match(mascotAssistantSource, /mascotAssistantMessage chatMessage/);
+assert.match(mascotAssistantSource, /mascotAssistantReasoning reasoningDisclosure/);
+assert.match(mascotAssistantSource, /mascotAssistantBody chatMarkdown/);
+assert.match(mascotAssistantSource, /mascotAssistantForm chatComposer composerGlass/);
 
 const gitignoreSource = readFileSync(new URL("../.gitignore", import.meta.url), "utf8");
 assert.match(gitignoreSource, /\.env\.local/);
@@ -398,7 +457,7 @@ assert.match(serverSource, /safeWorkspaceTaskId/);
 assert.match(serverSource, /workspaceFileContent/);
 assert.match(serverSource, /workspaceAgentFiles/);
 assert.match(serverSource, /workspaceAgentRun/);
-assert.match(serverSource, /fileName === "solution\.py"/);
+assert.match(serverSource, /fileName === solutionFileName\(taskLanguage\)/);
 assert.match(serverSource, /ON CONFLICT\(task_id\) DO UPDATE SET code = excluded\.code/);
 assert.match(serverSource, /workspace_path_escape/);
 assert.match(serverSource, /workspace_file_not_found/);
@@ -641,6 +700,7 @@ assert.match(envExampleSource, /^YANDEX_AI_STUDIO_FOLDER_ID=$/m);
 assert.match(envExampleSource, /^YANDEX_AI_STUDIO_BASE_URL=https:\/\/ai\.api\.cloud\.yandex\.net\/v1$/m);
 assert.match(envExampleSource, /^JUDGE0_BASE_URL=$/m);
 assert.match(envExampleSource, /^JUDGE0_PYTHON_LANGUAGE_ID=71$/m);
+assert.match(envExampleSource, /^JUDGE0_JAVASCRIPT_LANGUAGE_ID=63$/m);
 assert.match(envExampleSource, /^SANDBOX_NETWORK_ENABLED=false$/m);
 assert.doesNotMatch(envExampleSource, /VENV_PATH|PYTHON_BIN|PYTHON_TIMEOUT_MS|PYTHON_MAX_OUTPUT_BYTES/);
 assert.match(envExampleSource, /^CODELEARN_ENV_PATH=\.\/\.env$/m);

@@ -74,6 +74,7 @@ createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/lessons") return await importLesson(req, res);
     if (req.method === "GET" && url.pathname.startsWith("/api/tasks/") && url.pathname.endsWith("/log")) return await taskLog(req, res, url);
     if (req.method === "POST" && url.pathname.startsWith("/api/tasks/") && url.pathname.endsWith("/runs")) return await taskRun(req, res, url);
+    if (req.method === "POST" && url.pathname.startsWith("/api/tasks/") && url.pathname.endsWith("/execute")) return await taskExecute(req, res, url);
     if (url.pathname.startsWith("/api/workspace/tasks/") && url.pathname.includes("/agent/files")) return await workspaceAgentFiles(req, res, url);
     if (req.method === "POST" && url.pathname.startsWith("/api/workspace/tasks/") && url.pathname.endsWith("/agent/run")) return await workspaceAgentRun(req, res, url);
     if (req.method === "GET" && url.pathname.startsWith("/api/workspace/tasks/") && url.pathname.endsWith("/files")) return await workspaceFiles(req, res, url);
@@ -131,6 +132,8 @@ async function initDatabase() {
       prompt TEXT NOT NULL,
       starter_code TEXT NOT NULL,
       hidden_summary TEXT NOT NULL,
+      language TEXT NOT NULL DEFAULT 'python',
+      acceptance_criteria TEXT NOT NULL DEFAULT '[]',
       topic TEXT NOT NULL,
       difficulty TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -260,6 +263,12 @@ async function initDatabase() {
   }
   if (!db.prepare("PRAGMA table_info(assistant_messages)").all().some((column) => column.name === "reasoning")) {
     db.exec("ALTER TABLE assistant_messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''");
+  }
+  if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "language")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN language TEXT NOT NULL DEFAULT 'python'");
+  }
+  if (!db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "acceptance_criteria")) {
+    db.exec("ALTER TABLE tasks ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '[]'");
   }
 
   if (process.env.CODELEARN_SEED_DEV_DATA === "true" && scalar("SELECT COUNT(*) FROM lessons") === 0) {
@@ -611,7 +620,7 @@ function uniqueId(prefix, value) {
 }
 
 function readTaskQueue() {
-  return db.prepare("SELECT id, title, topic, difficulty, status, minutes, created_at AS createdAt, updated_at AS updatedAt FROM tasks ORDER BY position").all();
+  return db.prepare("SELECT id, title, topic, language, difficulty, status, minutes, created_at AS createdAt, updated_at AS updatedAt FROM tasks ORDER BY position").all();
 }
 
 function readTaskLogs() {
@@ -701,6 +710,69 @@ async function taskRun(req, res, url) {
     throw error;
   }
   sendJson(res, 200, { ok: true, run: { id: runId, taskId, status, finalResult, createdAt: now, updatedAt: now } });
+}
+
+async function taskExecute(req, res, url) {
+  const taskId = decodeURIComponent(url.pathname.slice("/api/tasks/".length, -"/execute".length));
+  const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
+  if (!task) return sendJson(res, 404, { error: "task_not_found" });
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => !["code", "mode"].includes(key))) {
+    return sendJson(res, 400, { error: "invalid_task_execution_request" });
+  }
+  if (typeof body.code !== "string") return sendJson(res, 400, { error: "invalid_progress_code" });
+  if (body.code.length > 20000) return sendJson(res, 413, { error: "source_too_large" });
+  if (!["run", "submit"].includes(body.mode)) return sendJson(res, 400, { error: "invalid_task_execution_mode" });
+  if (!["python", "javascript"].includes(task.language || "python")) return sendJson(res, 400, { error: "unsupported_task_language" });
+
+  const now = new Date().toISOString();
+  const current = db.prepare("SELECT hint_index AS hintIndex FROM task_progress WHERE task_id = ?").get(taskId) || {};
+  db.prepare(`INSERT INTO task_progress (task_id, code, hint_index, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(task_id) DO UPDATE SET code = excluded.code, updated_at = excluded.updated_at`)
+    .run(taskId, body.code, Number(current.hintIndex || 0), now);
+  await writeWorkspaceFiles(taskId, { overwriteSolution: true });
+
+  const publicChecks = db.prepare("SELECT kind, message, code FROM public_checks WHERE task_id = ? ORDER BY position").all(taskId);
+  let execution;
+  try {
+    execution = await runSandbox(body.code, publicChecks, { language: task.language || "python" });
+  } catch (error) {
+    return sendJson(res, 502, { error: "sandbox_unreachable", message: String(error.message || "").slice(0, 500) });
+  }
+  const passed = execution.status === "passed" && execution.public_test_results.every((check) => check.passed);
+  const taskStatus = body.mode === "submit" ? (passed ? "passed" : "failed") : task.status;
+  const feedback = taskExecutionFeedback(execution, body.mode);
+  const runId = crypto.randomUUID();
+  const runStatus = body.mode === "submit" ? taskStatus : `run_${execution.status}`;
+  db.exec("BEGIN");
+  try {
+    db.prepare("INSERT INTO task_runs (id, task_id, status, final_result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(runId, taskId, runStatus, feedback.slice(0, 5000), now, now);
+    db.prepare("INSERT INTO agent_events (run_id, type, payload, created_at) VALUES (?, ?, ?, ?)")
+      .run(runId, "task_execution", JSON.stringify({
+        mode: body.mode,
+        status: execution.status,
+        category: execution.category,
+        publicTestResults: execution.public_test_results.slice(0, 20),
+        executionTime: execution.execution_time,
+        memoryUsed: execution.memory_used
+      }).slice(0, 20000), now);
+    if (body.mode === "submit") db.prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?").run(taskStatus, now, taskId);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  sendJson(res, 200, { ok: true, execution, feedback, taskStatus, runId });
+}
+
+function taskExecutionFeedback(execution, mode) {
+  if (execution.status === "passed") return mode === "submit" ? "Код исполнился без ошибок, public checks прошли." : "Код исполнился без ошибок, public checks прошли.";
+  if (execution.status === "timeout") return "Выполнение превысило лимит времени. Проверьте бесконечные циклы и сложность алгоритма.";
+  if (execution.status === "syntax_error") return "Код не скомпилировался: исправьте синтаксис и запустите снова.";
+  if (execution.status === "test_failure") return "Часть public checks не прошла. Сверьте результат с acceptance criteria.";
+  return "Runtime завершился с ошибкой. Изучите stderr и повторите запуск.";
 }
 
 function taskRunTooLarge({ status, finalResult, messages, agentEvents }) {
@@ -1138,6 +1210,7 @@ async function assistantRespond(req, res) {
   const calls = providerToolCalls(provider.mode, initial.data);
   let finalData = initial.data;
   const outputs = [];
+  let successfulTask = null;
   let successfulTest = null;
   let memoryWrites = [];
   let action = null;
@@ -1151,9 +1224,12 @@ async function assistantRespond(req, res) {
         outputs.push(await executeAssistantTool(call, chat));
       }
     }
+    successfulTask = outputs.find((output) => output.ok && output.task) || null;
     successfulTest = outputs.find((output) => output.ok && output.test) || null;
     memoryWrites = outputs.filter((output) => output.ok && output.memory);
-    action = successfulTest ? { type: "open_test", targetId: successfulTest.test.id, label: "Открыть в тестах" } : null;
+    action = successfulTask
+      ? { type: "open_task", targetId: successfulTask.task.id, label: "Открыть задачу" }
+      : successfulTest ? { type: "open_test", targetId: successfulTest.test.id, label: "Открыть в тестах" } : null;
     try {
       finalData = await continueProvider(provider, baseUrl, apiKey, {
         model,
@@ -1165,8 +1241,10 @@ async function assistantRespond(req, res) {
         outputs
       });
     } catch (error) {
-      if (successfulTest || memoryWrites.length) {
-        const content = successfulTest
+      if (successfulTask || successfulTest || memoryWrites.length) {
+        const content = successfulTask
+          ? "Задача сохранена, но provider не вернул финальный ответ. Откройте задачу или повторите запрос."
+          : successfulTest
           ? "Тест сохранён, но provider не вернул финальный ответ. Откройте тест или повторите запрос для текстового ответа."
           : "Graph Memory обновлена, но provider не вернул финальный текстовый ответ.";
         const message = persistAssistantMessage(chat.id, "system", content, action);
@@ -1175,6 +1253,7 @@ async function assistantRespond(req, res) {
           providerError: "provider_request_failed",
           message,
           action,
+          task: successfulTask?.task || null,
           test: successfulTest?.test || null,
           memoryWrites,
           toolErrors: outputs.filter((output) => !output.ok),
@@ -1185,7 +1264,10 @@ async function assistantRespond(req, res) {
     }
   }
 
-  const content = successfulTest ? testCreatedChatMessage(successfulTest.test) : assistantResponseText(finalData).trim();
+  const providerContent = assistantResponseText(finalData).trim();
+  const content = successfulTask
+    ? providerContent || taskCreatedChatMessage(successfulTask.task)
+    : successfulTest ? testCreatedChatMessage(successfulTest.test) : providerContent;
   if (!content) return sendJson(res, 502, { error: "empty_provider_response", memory: memory.status });
   const reasoning = successfulTest ? "" : assistantReasoningText(finalData).trim();
   const message = persistAssistantMessage(chat.id, "assistant", content, action, reasoning);
@@ -1193,6 +1275,7 @@ async function assistantRespond(req, res) {
     ok: true,
     message,
     action,
+    task: successfulTask?.task || null,
     test: successfulTest?.test || null,
     memoryWrites,
     toolErrors: outputs.filter((output) => !output.ok),
@@ -1227,6 +1310,7 @@ async function assistantRespondStream(req, res) {
   startAssistantStream(res);
 
   const emit = (event) => sendAssistantEvent(res, event);
+  let successfulTask = null;
   let successfulTest = null;
   let memoryWrites = [];
   let action = null;
@@ -1254,9 +1338,12 @@ async function assistantRespondStream(req, res) {
           outputs.push(await executeAssistantTool(call, chat));
         }
       }
+      successfulTask = outputs.find((output) => output.ok && output.task) || null;
       successfulTest = outputs.find((output) => output.ok && output.test) || null;
       memoryWrites = outputs.filter((output) => output.ok && output.memory);
-      action = successfulTest ? { type: "open_test", targetId: successfulTest.test.id, label: "Открыть в тестах" } : null;
+      action = successfulTask
+        ? { type: "open_task", targetId: successfulTask.task.id, label: "Открыть задачу" }
+        : successfulTest ? { type: "open_test", targetId: successfulTest.test.id, label: "Открыть в тестах" } : null;
 
       const continued = await continueProviderStream(provider, baseUrl, apiKey, {
         model,
@@ -1281,6 +1368,10 @@ async function assistantRespondStream(req, res) {
 
     content = content.trim();
     reasoning = reasoning.trim();
+    if (!content && successfulTask) {
+      content = taskCreatedChatMessage(successfulTask.task);
+      emit({ type: "text_delta", delta: content });
+    }
     if (!content) throw new ProviderStreamError("empty_provider_response");
     const message = persistAssistantMessage(chat.id, "assistant", content, action, reasoning);
     emit({
@@ -1288,6 +1379,7 @@ async function assistantRespondStream(req, res) {
       ok: true,
       message,
       action,
+      task: successfulTask?.task || null,
       test: successfulTest?.test || null,
       memoryWrites,
       toolErrors: outputs.filter((output) => !output.ok),
@@ -1296,18 +1388,19 @@ async function assistantRespondStream(req, res) {
     res.end();
   } catch (error) {
     if (controller.signal.aborted || error?.name === "AbortError") {
-      if (successfulTest || memoryWrites.length) persistToolSideEffectNotice(chat.id, successfulTest, memoryWrites, action);
+      if (successfulTask || successfulTest || memoryWrites.length) persistToolSideEffectNotice(chat.id, successfulTask, successfulTest, memoryWrites, action);
       if (!res.writableEnded) res.end();
       return;
     }
-    if (successfulTest || memoryWrites.length) {
-      const message = persistToolSideEffectNotice(chat.id, successfulTest, memoryWrites, action);
+    if (successfulTask || successfulTest || memoryWrites.length) {
+      const message = persistToolSideEffectNotice(chat.id, successfulTask, successfulTest, memoryWrites, action);
       emit({
         type: "complete",
         ok: false,
         providerError: "provider_request_failed",
         message,
         action,
+        task: successfulTask?.task || null,
         test: successfulTest?.test || null,
         memoryWrites,
         toolErrors: outputs.filter((output) => !output.ok),
@@ -1320,8 +1413,10 @@ async function assistantRespondStream(req, res) {
   }
 }
 
-function persistToolSideEffectNotice(chatId, successfulTest, memoryWrites, action) {
-  const content = successfulTest
+function persistToolSideEffectNotice(chatId, successfulTask, successfulTest, memoryWrites, action) {
+  const content = successfulTask
+    ? "Задача сохранена, но provider не вернул финальный ответ. Откройте задачу или повторите запрос."
+    : successfulTest
     ? "Тест сохранён, но provider не вернул финальный ответ. Откройте тест или повторите запрос для текстового ответа."
     : memoryWrites.length
       ? "Graph Memory обновлена, но provider не вернул финальный текстовый ответ."
@@ -1372,7 +1467,30 @@ async function assistantMemoryContext(query, chat) {
     preferences: accepted.filter((item) => ["coding_habit", "response_preference"].includes(item.kind)).map((item) => item.text),
     skills: accepted.filter((item) => ["weak_topic", "strong_topic", "skill_observation"].includes(item.kind)).map((item) => `${item.kind}: ${item.text}`),
     graph: graph.results,
+    task: assistantTaskContext(chat.taskId),
     status: { graph: graph.status }
+  };
+}
+
+function assistantTaskContext(taskId) {
+  if (!taskId) return null;
+  const task = db.prepare("SELECT id, title, prompt, language, acceptance_criteria AS acceptanceCriteria FROM tasks WHERE id = ?").get(taskId);
+  if (!task) return null;
+  const progress = db.prepare("SELECT code FROM task_progress WHERE task_id = ?").get(taskId);
+  const run = db.prepare("SELECT status, final_result AS finalResult FROM task_runs WHERE task_id = ? ORDER BY created_at DESC LIMIT 1").get(taskId);
+  const evidence = db.prepare(`SELECT e.payload FROM agent_events e
+    JOIN task_runs r ON r.id = e.run_id
+    WHERE r.task_id = ? AND e.type = 'task_execution'
+    ORDER BY r.created_at DESC, e.id DESC LIMIT 1`).get(taskId);
+  return {
+    id: task.id,
+    title: task.title,
+    description: task.prompt,
+    acceptanceCriteria: parseJson(task.acceptanceCriteria || "[]"),
+    language: task.language || "python",
+    code: String(progress?.code || "").slice(0, 12000),
+    lastResult: run ? `${run.status}: ${run.finalResult}`.slice(0, 2000) : "запусков пока нет",
+    executionEvidence: evidence ? JSON.stringify(parseJson(evidence.payload)).slice(0, 5000) : "нет execution evidence"
   };
 }
 
@@ -1430,6 +1548,18 @@ function assistantInstructions(memory) {
     "Контекст памяти ограничен текущим запросом. Не цитируй его как скрытый профиль и не сохраняй новые данные без исполняемого tool.",
     section("Пользовательская персонализация", [...memory.personality, ...memory.preferences].slice(0, 8)),
     section("Наблюдения о навыках", memory.skills.slice(0, 6)),
+    ...(memory.task ? [
+      "# Текущая coding-задача",
+      `- taskId: ${memory.task.id}`,
+      `- title: ${memory.task.title}`,
+      `- language: ${memory.task.language}`,
+      `- description: ${memory.task.description}`,
+      `- acceptance criteria: ${memory.task.acceptanceCriteria.join("; ")}`,
+      `- last execution: ${memory.task.lastResult}`,
+      `- execution evidence: ${memory.task.executionEvidence}`,
+      "Сделай ревью самостоятельно: оцени корректность, читаемость, граничные случаи и соответствие acceptance criteria. Не противоречь execution evidence и не выдумывай скрытые проверки.",
+      `- current code:\n\`\`\`${memory.task.language}\n${memory.task.code}\n\`\`\``
+    ] : []),
     `# Graph memory\n${graphState}`,
     ...memory.graph.map((item) => `- ${item}`)
   ].join("\n").slice(0, 7000);
@@ -1717,6 +1847,13 @@ function displayableReasoningDetails(details) {
 
 function providerToolOutput(output) {
   if (!output?.ok) return output;
+  if (output.task) {
+    return {
+      ok: true,
+      task: { id: output.task.id, title: output.task.title, language: output.task.language },
+      action: { type: "open_task", targetId: output.task.id }
+    };
+  }
   if (output.memory) {
     return {
       ok: true,
@@ -1745,13 +1882,23 @@ function testCreatedChatMessage(test) {
   return `Тест «${test.topic}» создан: ${test.questions.length} вопросов. Он сохранён во вкладке «Тесты».`;
 }
 
+function taskCreatedChatMessage(task) {
+  if (!task) return "Задача создана и сохранена во вкладке «Задачи».";
+  return `Задача «${task.title}» создана. Код и результаты будут сохраняться во вкладке «Задачи».`;
+}
+
 async function executeAssistantTool(call, chat) {
-  if (!["create_test", "remember_context"].includes(call.name)) return { ok: false, error: "tool_not_allowed" };
+  if (!["create_task", "create_test", "remember_context"].includes(call.name)) return { ok: false, error: "tool_not_allowed" };
   let spec;
   try {
     spec = JSON.parse(String(call.arguments || ""));
   } catch {
     return { ok: false, error: "invalid_tool_arguments_json" };
+  }
+  if (call.name === "create_task") {
+    const error = validateCodingTaskSpec(spec);
+    if (error) return { ok: false, error };
+    return { ok: true, task: saveCodingTask(spec) };
   }
   if (call.name === "create_test") {
     const error = validateQuizSpec(spec);
@@ -1759,6 +1906,48 @@ async function executeAssistantTool(call, chat) {
     return { ok: true, test: saveQuiz(spec) };
   }
   return saveAutonomousMemory(spec, chat);
+}
+
+function validateCodingTaskSpec(spec) {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) return "invalid_task_spec";
+  if (!["python", "javascript"].includes(spec.language)) return "invalid_task_language";
+  if (typeof spec.title !== "string" || spec.title.trim().length < 2 || spec.title.length > 200) return "invalid_task_title";
+  if (typeof spec.description !== "string" || spec.description.trim().length < 10 || spec.description.length > 10000) return "invalid_task_description";
+  if (typeof spec.starterCode !== "string" || !spec.starterCode.trim() || spec.starterCode.length > 20000) return "invalid_task_starter_code";
+  if (!Array.isArray(spec.acceptanceCriteria) || spec.acceptanceCriteria.length < 1 || spec.acceptanceCriteria.length > 10 || spec.acceptanceCriteria.some((item) => typeof item !== "string" || !item.trim() || item.length > 500)) return "invalid_task_acceptance_criteria";
+  if (!Array.isArray(spec.publicChecks) || spec.publicChecks.length < 1 || spec.publicChecks.length > 20 || !validPublicChecks(spec.publicChecks) || spec.publicChecks.some((check) => typeof check?.message !== "string" || !check.message.trim() || typeof check?.code !== "string" || !check.code.trim())) return "invalid_task_public_checks";
+  if (spec.hints !== undefined && (!Array.isArray(spec.hints) || spec.hints.length > 10 || spec.hints.some((hint) => typeof hint !== "string" || !hint.trim() || hint.length > 1000))) return "invalid_task_hints";
+  if (spec.difficulty !== undefined && !["лёгкая", "средняя", "сложная"].includes(spec.difficulty)) return "invalid_task_difficulty";
+  if (spec.estimatedMinutes !== undefined && (!Number.isInteger(spec.estimatedMinutes) || spec.estimatedMinutes < 5 || spec.estimatedMinutes > 180)) return "invalid_task_minutes";
+  const allowed = new Set(["title", "description", "language", "starterCode", "acceptanceCriteria", "publicChecks", "hints", "difficulty", "estimatedMinutes"]);
+  if (Object.keys(spec).some((key) => !allowed.has(key))) return "invalid_task_spec";
+  return "";
+}
+
+function saveCodingTask(spec) {
+  const now = new Date().toISOString();
+  const lessonId = "assistant-generated-tasks";
+  const taskId = uniqueId("task", spec.title);
+  const position = Number(db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS position FROM tasks").get().position);
+  db.exec("BEGIN");
+  try {
+    db.prepare("INSERT OR IGNORE INTO lessons (id, title, topic, level, objective, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(lessonId, "Задачи куратора", "coding practice", "адаптивный", "Проверяемые coding-задачи, созданные куратором.", now);
+    db.prepare(`INSERT INTO tasks
+      (id, lesson_id, title, prompt, starter_code, hidden_summary, language, acceptance_criteria, topic, difficulty, status, minutes, position, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(taskId, lessonId, spec.title.trim(), spec.description.trim(), spec.starterCode, "Скрытые проверки не настроены.", spec.language, JSON.stringify(spec.acceptanceCriteria.map((item) => item.trim())), spec.language === "javascript" ? "JavaScript" : "Python", spec.difficulty || "средняя", "в работе", Number(spec.estimatedMinutes || 20), position, now, now);
+    const insertCheck = db.prepare("INSERT INTO public_checks (task_id, kind, message, code, position) VALUES (?, 'python_assert', ?, ?, ?)");
+    spec.publicChecks.forEach((check, index) => insertCheck.run(taskId, check.message.trim(), check.code, index));
+    const insertHint = db.prepare("INSERT INTO hints (task_id, text, position) VALUES (?, ?, ?)");
+    (spec.hints || []).forEach((hint, index) => insertHint.run(taskId, hint.trim(), index));
+    db.prepare("INSERT INTO task_progress (task_id, code, hint_index, updated_at) VALUES (?, ?, 0, ?)").run(taskId, spec.starterCode, now);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return readTaskDetails(db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId));
 }
 
 async function saveAutonomousMemory(spec, chat) {
@@ -1998,6 +2187,8 @@ function readTaskDetails(task) {
     status: task.status,
     minutes: task.minutes,
     prompt: task.prompt,
+    language: task.language || "python",
+    acceptanceCriteria: parseJson(task.acceptance_criteria || "[]"),
     starterCode: task.starter_code,
     hiddenSummary: task.hidden_summary,
     publicChecks: db.prepare("SELECT kind, message, code FROM public_checks WHERE task_id = ? ORDER BY position").all(task.id),
@@ -2129,10 +2320,11 @@ async function writeWorkspaceFiles(taskId, options = {}) {
   const details = readTaskDetails(task);
   const progress = db.prepare("SELECT code FROM task_progress WHERE task_id = ?").get(taskId);
   const dir = safeWorkspaceTaskDir(taskId);
+  const solutionFile = solutionFileName(details.language);
   await mkdir(dir, { recursive: true });
   await writeFileIfMissing(join(dir, "task.md"), taskMarkdown(details));
-  if (options.overwriteSolution) await writeFile(join(dir, "solution.py"), progress?.code ?? details.starterCode, "utf8");
-  else await writeFileIfMissing(join(dir, "solution.py"), progress?.code ?? details.starterCode);
+  if (options.overwriteSolution) await writeFile(join(dir, solutionFile), progress?.code ?? details.starterCode, "utf8");
+  else await writeFileIfMissing(join(dir, solutionFile), progress?.code ?? details.starterCode);
   await writeFileIfMissing(join(dir, "checks.json"), JSON.stringify(details.publicChecks, null, 2));
   return dir;
 }
@@ -2146,7 +2338,11 @@ async function writeFileIfMissing(file, content) {
 }
 
 function workspaceFileNames() {
-  return ["checks.json", "solution.py", "task.md"];
+  return ["checks.json", "solution.py", "solution.js", "task.md"];
+}
+
+function solutionFileName(language) {
+  return language === "javascript" ? "solution.js" : "solution.py";
 }
 
 async function workspaceAgentFiles(req, res, url) {
@@ -2186,7 +2382,8 @@ async function workspaceAgentFiles(req, res, url) {
       throw error;
     }
     await writeFile(file, content, "utf8");
-    if (fileName === "solution.py") {
+    const taskLanguage = db.prepare("SELECT language FROM tasks WHERE id = ?").get(taskId)?.language || "python";
+    if (fileName === solutionFileName(taskLanguage)) {
       const current = db.prepare("SELECT hint_index AS hintIndex FROM task_progress WHERE task_id = ?").get(taskId) || {};
       const updatedAt = new Date().toISOString();
       db.prepare(`INSERT INTO task_progress (task_id, code, hint_index, updated_at)
@@ -2332,27 +2529,41 @@ async function executeCode(req, res) {
   const publicChecks = body.public_checks === undefined ? [] : body.public_checks;
   if (!Array.isArray(publicChecks)) return sendJson(res, 400, { error: "invalid_public_checks" });
   if (!validPublicChecks(publicChecks)) return sendJson(res, 413, { error: "public_checks_too_large" });
+  if (!String(process.env.JUDGE0_BASE_URL || "").trim()) return sendJson(res, 400, { error: "sandbox_not_configured" });
+  if (!httpServiceUrl(process.env.JUDGE0_BASE_URL)) return sendJson(res, 400, { error: "invalid_sandbox_url" });
+  sendJson(res, 200, await runSandbox(source, publicChecks, {
+    cpuTimeSec: positiveNumber(process.env.SANDBOX_CPU_TIME_SEC || body.cpu_time_sec, 2),
+    memoryKb: positiveNumber(process.env.SANDBOX_MEMORY_KB, positiveNumber(body.memory_mb, 256) * 1024)
+  }));
+}
+
+async function runSandbox(source, publicChecks, limits = {}) {
   const judgeUrl = String(process.env.JUDGE0_BASE_URL || "").trim();
-  if (!judgeUrl) return sendJson(res, 400, { error: "sandbox_not_configured" });
+  if (!judgeUrl) throw new ProviderStreamError("sandbox_not_configured");
   const sandboxUrl = httpServiceUrl(judgeUrl);
-  if (!sandboxUrl) return sendJson(res, 400, { error: "invalid_sandbox_url" });
-  const cpuTimeSec = positiveNumber(process.env.SANDBOX_CPU_TIME_SEC || body.cpu_time_sec, 2);
+  if (!sandboxUrl) throw new ProviderStreamError("invalid_sandbox_url");
+  const cpuTimeSec = limits.cpuTimeSec || positiveNumber(process.env.SANDBOX_CPU_TIME_SEC, 2);
   const wallTimeSec = positiveNumber(process.env.SANDBOX_WALL_TIME_SEC, 5);
-  const memoryKb = positiveNumber(process.env.SANDBOX_MEMORY_KB, positiveNumber(body.memory_mb, 256) * 1024);
+  const memoryKb = limits.memoryKb || positiveNumber(process.env.SANDBOX_MEMORY_KB, 256 * 1024);
+  const language = limits.language || "python";
+  const languageId = language === "javascript"
+    ? Number(process.env.JUDGE0_JAVASCRIPT_LANGUAGE_ID || 63)
+    : Number(process.env.JUDGE0_PYTHON_LANGUAGE_ID || 71);
   const data = await fetchJson(`${sandboxUrl}/submissions?base64_encoded=false&wait=true`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      language_id: Number(process.env.JUDGE0_PYTHON_LANGUAGE_ID || 71),
-      source_code: sandboxScript(source, publicChecks),
+      language_id: languageId,
+      source_code: sandboxScript(source, publicChecks, language),
       cpu_time_limit: cpuTimeSec,
       wall_time_limit: wallTimeSec,
       memory_limit: memoryKb,
       max_processes_and_or_threads: Number(process.env.SANDBOX_MAX_PROCESSES || 1),
+      max_file_size: 1024,
       enable_network: String(process.env.SANDBOX_NETWORK_ENABLED || "false") === "true"
     })
   });
-  sendJson(res, 200, parseSandboxResult(data));
+  return parseSandboxResult(data);
 }
 
 function validPublicChecks(checks) {
@@ -2581,7 +2792,8 @@ function validSecretInput(value) {
   return typeof value === "string" && !hasLineBreak(value);
 }
 
-function sandboxScript(source, publicChecks) {
+function sandboxScript(source, publicChecks, language = "python") {
+  if (language === "javascript") return javascriptSandboxScript(source, publicChecks);
   return `
 import contextlib
 import io
@@ -2635,17 +2847,55 @@ print(json.dumps({
 `;
 }
 
+function javascriptSandboxScript(source, publicChecks) {
+  return `
+const assert = require("node:assert/strict");
+const vm = require("node:vm");
+const source = ${JSON.stringify(source)};
+const checks = ${JSON.stringify(publicChecks)};
+const logs = [];
+const context = vm.createContext({ assert, console: { log: (...items) => logs.push(items.join(" ")), error: (...items) => logs.push(items.join(" ")) } });
+const results = [];
+let status = "passed";
+let category = "accepted";
+let stderr = "";
+
+try {
+  vm.runInContext(source, context, { timeout: 1500 });
+} catch (error) {
+  status = error instanceof SyntaxError ? "syntax_error" : "runtime_error";
+  category = status;
+  stderr = error.stack || String(error);
+}
+
+if (status === "passed") {
+  for (const check of checks) {
+    try {
+      vm.runInContext(check.code || "", context, { timeout: 1000 });
+      results.push({ name: check.message || "check", passed: true, message: "прошла" });
+    } catch (error) {
+      status = error?.code === "ERR_ASSERTION" ? "test_failure" : "runtime_error";
+      category = status;
+      results.push({ name: check.message || "check", passed: false, message: error.message || String(error) });
+    }
+  }
+}
+
+console.log(JSON.stringify({ status, stdout: logs.join("\\n"), stderr, public_test_results: results, hidden_test_summary: "Скрытые проверки не настроены.", category }));
+`;
+}
+
 function parseSandboxResult(data) {
   const stdout = String(data.stdout || "");
   try {
     const parsed = JSON.parse(stdout.trim().split("\n").at(-1) || "{}");
-    if (parsed.status) return { ...parsed, execution_time: Number(data.time || parsed.execution_time || 0), memory_used: Number(data.memory || parsed.memory_used || 0) };
+    if (parsed.status) return boundedSandboxResult({ ...parsed, execution_time: Number(data.time || parsed.execution_time || 0), memory_used: Number(data.memory || parsed.memory_used || 0) });
   } catch {
     // Sandbox responded, but stdout did not match the JSON contract.
   }
   const statusText = String(data.status?.description || "").toLowerCase();
   const timeout = statusText.includes("time");
-  return {
+  return boundedSandboxResult({
     status: timeout ? "timeout" : "runtime_error",
     stdout,
     stderr: String(data.stderr || data.compile_output || ""),
@@ -2654,6 +2904,20 @@ function parseSandboxResult(data) {
     public_test_results: [],
     hidden_test_summary: "Скрытые проверки не запускались.",
     category: timeout ? "timeout" : "runtime_error"
+  });
+}
+
+function boundedSandboxResult(result) {
+  return {
+    ...result,
+    stdout: String(result.stdout || "").slice(0, 20000),
+    stderr: String(result.stderr || "").slice(0, 20000),
+    hidden_test_summary: String(result.hidden_test_summary || "").slice(0, 1000),
+    public_test_results: (Array.isArray(result.public_test_results) ? result.public_test_results : []).slice(0, 50).map((check) => ({
+      name: String(check?.name || "check").slice(0, 400),
+      passed: check?.passed === true,
+      message: String(check?.message || "").slice(0, 2000)
+    }))
   };
 }
 

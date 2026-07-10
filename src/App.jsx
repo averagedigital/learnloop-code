@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { assistantMarkdownToHtml } from "./mascot-assistant.js";
+import { assistantMarkdownToHtml, buildMascotAssistantPrompt, initMascotAssistant, raiseMascotAssistant } from "./mascot-assistant.js";
 import ProfileOverlay from "./ProfileOverlay.jsx";
 import { providers } from "./platform.js";
 import { profileAvatarSrc, profileMascotFrameSrc } from "./profile.js";
@@ -75,12 +75,27 @@ async function requestAssistantStream(chatId, signal, onEvent) {
   return completed;
 }
 
+function parsedMascotSettings(value) {
+  try {
+    const settings = JSON.parse(String(value || ""));
+    return settings && typeof settings === "object" && !Array.isArray(settings) ? settings : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isMascotChat(chat) {
+  return String(chat?.label || "").startsWith("Помощь · ");
+}
+
 function currentRoute() {
   const hash = decodeURIComponent(window.location.hash.slice(1));
-  if (hash === "chat") return { tab: "chat", testId: "" };
-  if (hash === "tests") return { tab: "tests", testId: "" };
-  if (hash.startsWith("tests/")) return { tab: "tests", testId: hash.slice(6) };
-  return { tab: "home", testId: "" };
+  if (hash === "chat") return { tab: "chat", testId: "", taskId: "" };
+  if (hash === "tasks") return { tab: "tasks", testId: "", taskId: "" };
+  if (hash.startsWith("tasks/")) return { tab: "tasks", testId: "", taskId: hash.slice(6) };
+  if (hash === "tests") return { tab: "tests", testId: "", taskId: "" };
+  if (hash.startsWith("tests/")) return { tab: "tests", testId: hash.slice(6), taskId: "" };
+  return { tab: "home", testId: "", taskId: "" };
 }
 
 function CanvasNeuralFlow() {
@@ -320,14 +335,186 @@ function QuizView({ tests, selectedTestId, requestJson, onAttemptSaved }) {
   );
 }
 
+function TaskView({ tasks, selectedTaskId, chats, mascotId, requestJson, onTaskUpdated, onChatUpdated, onExecutionEvidence }) {
+  const selected = tasks.find((task) => task.id === selectedTaskId) || tasks[0];
+  const [log, setLog] = useState(null);
+  const [code, setCode] = useState("");
+  const [output, setOutput] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const taskChat = chats.find((chat) => chat.taskId === selected?.id);
+  const [tutorChatId, setTutorChatId] = useState("");
+  const [tutorMessages, setTutorMessages] = useState([]);
+  const [tutorDraft, setTutorDraft] = useState("");
+  const [tutorSending, setTutorSending] = useState(false);
+  const [tutorOpen, setTutorOpen] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const tutorAbortRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!selected) return undefined;
+    setLog(null);
+    setOutput(null);
+    setError("");
+    requestJson(`/api/tasks/${encodeURIComponent(selected.id)}/log`).then((result) => {
+      if (cancelled) return;
+      setLog(result);
+      setCode(result.userCode || result.task.starterCode || "");
+    }).catch((requestError) => {
+      if (!cancelled) setError(requestError.message || "Не удалось загрузить задачу.");
+    });
+    return () => { cancelled = true; };
+  }, [selected?.id, requestJson]);
+
+  useEffect(() => {
+    setTutorChatId(taskChat?.id || "");
+    setTutorMessages(taskChat?.messages || []);
+    setTutorDraft("");
+  }, [selected?.id, taskChat?.id]);
+
+  if (!selected) return <div className="testsEmpty"><p className="emptyEyebrow">CODELEARNML / TASKS</p><h2>Задач пока нет</h2><p>Попроси куратора: «Создай coding-задачу».</p></div>;
+  if (!log && !error) return <div className="chatEmpty loading"><p>Загружаю рабочее состояние задачи…</p></div>;
+
+  async function execute(mode) {
+    if (loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await requestJson(`/api/tasks/${encodeURIComponent(selected.id)}/execute`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code, mode })
+      });
+      setOutput(result);
+      onExecutionEvidence(selected.id, {
+        status: result.execution.status,
+        feedback: result.feedback,
+        stdout: result.execution.stdout,
+        stderr: result.execution.stderr,
+        publicChecks: result.execution.public_test_results
+      });
+      onTaskUpdated({ ...selected, status: result.taskStatus, finalResult: result.feedback, updatedAt: new Date().toISOString() });
+    } catch (requestError) {
+      setError(requestError.message || "Не удалось выполнить код.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function requestTutor(content) {
+    if (!content || tutorSending) return;
+    const userMessages = [...tutorMessages, { role: "user", content }];
+    let streamed = { role: "assistant", content: "", reasoning: "", streaming: true, createdAt: `task-stream-${Date.now()}` };
+    setTutorMessages([...userMessages, streamed]);
+    setTutorDraft("");
+    setTutorSending(true);
+    const controller = new AbortController();
+    tutorAbortRef.current = controller;
+    try {
+      let id = tutorChatId;
+      let createdChat = null;
+      if (!id) {
+        const created = await requestJson("/api/assistant/chats", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ label: selected.title, taskId: selected.id })
+        });
+        createdChat = created.chat;
+        id = created.chat.id;
+        setTutorChatId(id);
+      }
+      await requestJson(`/api/assistant/chats/${encodeURIComponent(id)}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ role: "user", content })
+      });
+      const result = await requestAssistantStream(id, controller.signal, (streamEvent) => {
+        if (streamEvent.type === "text_delta") streamed = { ...streamed, content: `${streamed.content}${streamEvent.delta}` };
+        if (streamEvent.type === "reasoning_delta") streamed = { ...streamed, reasoning: `${streamed.reasoning}${streamEvent.delta}` };
+        if (["text_delta", "reasoning_delta"].includes(streamEvent.type)) setTutorMessages([...userMessages, streamed]);
+      });
+      const completed = [...userMessages, result.message];
+      setTutorMessages(completed);
+      onChatUpdated(id, completed, createdChat || taskChat || { id, label: selected.title, taskId: selected.id });
+    } catch (requestError) {
+      const partial = streamed.content || streamed.reasoning ? { ...streamed, streaming: false, interrupted: true } : null;
+      setTutorMessages(partial ? [...userMessages, partial] : userMessages);
+      setError(requestError.name === "AbortError" ? "Ответ куратора остановлен." : requestError.message || "Куратор недоступен.");
+    } finally {
+      tutorAbortRef.current = null;
+      setTutorSending(false);
+    }
+  }
+
+  async function askTutor(event) {
+    event.preventDefault();
+    const content = tutorDraft.trim();
+    if (!content) return;
+    await requestTutor(content);
+  }
+
+  async function reviewSolution() {
+    if (reviewing || tutorSending) return;
+    setReviewing(true);
+    setError("");
+    try {
+      await requestJson(`/api/tasks/${encodeURIComponent(selected.id)}/progress`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code })
+      });
+      setTutorOpen(true);
+      await requestTutor("Проведи ревью текущего решения: оцени корректность, читаемость, граничные случаи и соответствие acceptance criteria. Учти последние результаты исполнения, если они есть.");
+    } catch (requestError) {
+      setError(requestError.message || "Не удалось запросить ревью.");
+    } finally {
+      setReviewing(false);
+    }
+  }
+
+  return (
+    <div className="taskView">
+      <header className="taskHeader"><div><p>CODELEARNML / TASK</p><h1>{log?.task.title || selected.title}</h1><span>{log?.task.language || "python"} · {selected.difficulty || "средняя"} · {selected.minutes || 20} мин</span></div></header>
+      <div className="taskWorkbench">
+        <section className="taskBrief" aria-label="Условие задачи">
+          <h2>Условие</h2>
+          <p>{log?.task.prompt}</p>
+          <h3>Готово, когда</h3>
+          <ul>{(log?.task.acceptanceCriteria || []).map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
+        </section>
+        <section className="taskEditor" aria-label="Редактор решения">
+          <div className="taskEditorBar"><span>{log?.task.language === "javascript" ? "solution.js" : "solution.py"}</span><small>{loading ? "выполняется" : "сохраняется при запуске или ревью"}</small></div>
+          <textarea aria-label="Код решения" value={code} onChange={(event) => setCode(event.target.value)} spellCheck="false" disabled={loading} />
+          <div className="taskActions"><button type="button" onClick={() => execute("run")} disabled={loading}>Запустить код</button><button type="button" className="primary" onClick={reviewSolution} disabled={reviewing || tutorSending}>{reviewing ? "Ревью…" : "Ревью LLM"}</button></div>
+          {output ? <div className={`taskOutput ${output.execution.status}`} role="status"><strong>{output.feedback}</strong><pre>{[output.execution.stdout, output.execution.stderr].filter(Boolean).join("\n") || output.execution.public_test_results.map((check) => `${check.passed ? "✓" : "×"} ${check.name}`).join("\n")}</pre></div> : null}
+          {error ? <p className="composerError" role="alert">{error}</p> : null}
+        </section>
+      </div>
+      <details className="taskTutor" open={tutorOpen} onToggle={(event) => setTutorOpen(event.currentTarget.open)}>
+        <summary><img className="taskTutorMascot" src={profileMascotFrameSrc(mascotId, tutorSending ? "thinking" : "idle", 0)} alt="" />Диалог с куратором <span>{tutorMessages.length ? tutorMessages.length : ""}</span></summary>
+        <div className="taskTutorThread">
+          {tutorMessages.length ? tutorMessages.map((message, index) => <div className={`taskTutorMessage ${message.role}`} key={message.createdAt || `${message.role}-${index}`}>
+            {message.reasoning ? <details className="reasoningDisclosure"><summary>Краткое обоснование</summary><div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.reasoning) }} /></details> : null}
+            {message.content ? <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.content) }} /> : <span>Обдумываю…</span>}
+          </div>) : <p>Спроси о текущем коде или результате запуска.</p>}
+        </div>
+        <form className="taskTutorComposer" onSubmit={askTutor}><input aria-label="Вопрос куратору по задаче" value={tutorDraft} onChange={(event) => setTutorDraft(event.target.value)} placeholder="Почему не проходит проверка?" disabled={tutorSending} /><button type={tutorSending ? "button" : "submit"} onClick={tutorSending ? () => tutorAbortRef.current?.abort() : undefined} disabled={!tutorSending && !tutorDraft.trim()}>{tutorSending ? "Стоп" : "Спросить"}</button></form>
+      </details>
+    </div>
+  );
+}
+
 export default function App() {
   const [frameIndex, setFrameIndex] = useState(0);
   const initialRoute = currentRoute();
   const [activeTab, setActiveTab] = useState(initialRoute.tab);
   const [selectedTestId, setSelectedTestId] = useState(initialRoute.testId);
+  const [selectedTaskId, setSelectedTaskId] = useState(initialRoute.taskId);
   const [toolState, setToolState] = useState({ loading: true, error: "", app: null, runtime: null });
   const [chatHistory, setChatHistory] = useState([]);
   const [tests, setTests] = useState([]);
+  const [tasks, setTasks] = useState([]);
   const [chatId, setChatId] = useState("");
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
@@ -335,10 +522,14 @@ export default function App() {
   const [composerError, setComposerError] = useState("");
   const [memoryNotice, setMemoryNotice] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
+  const [profileSection, setProfileSection] = useState("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [taskExecutionEvidence, setTaskExecutionEvidence] = useState({});
   const composerRef = useRef(null);
   const threadEndRef = useRef(null);
   const activeRequestRef = useRef(null);
+  const mascotContextRef = useRef({ surface: "chat" });
+  const mascotSendRef = useRef(null);
 
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return undefined;
@@ -359,14 +550,16 @@ export default function App() {
         ]);
         if (cancelled) return;
         const history = Array.isArray(chats.chats) ? chats.chats : [];
+        const initialChat = history.find((chat) => !chat.taskId && !isMascotChat(chat));
         setToolState({ loading: false, error: "", app, runtime });
         setChatHistory(history);
         setTests(Array.isArray(savedTests.tests) ? savedTests.tests : []);
+        setTasks(Array.isArray(app.tasks) ? app.tasks : []);
         if (!runtime?.graph?.configured) setMemoryNotice("Graph memory не настроена. В запрос войдёт только локальная подтверждённая память.");
         else if (!runtime.graph.ok) setMemoryNotice("Graph memory недоступна. Результаты graph retrieval не используются.");
-        if (history[0]) {
-          setChatId(history[0].id);
-          setMessages(history[0].messages || []);
+        if (initialChat) {
+          setChatId(initialChat.id);
+          setMessages(initialChat.messages || []);
         }
       } catch (error) {
         if (!cancelled) setToolState({ loading: false, error: error.message, app: null, runtime: null });
@@ -388,6 +581,7 @@ export default function App() {
       const route = currentRoute();
       setActiveTab(route.tab);
       setSelectedTestId(route.testId);
+      setSelectedTaskId(route.taskId);
     };
     window.addEventListener("hashchange", syncTab);
     return () => window.removeEventListener("hashchange", syncTab);
@@ -402,6 +596,12 @@ export default function App() {
     window.location.hash = `tests/${encodeURIComponent(testId)}`;
     setActiveTab("tests");
     setSelectedTestId(testId);
+  }
+
+  function openTask(taskId) {
+    window.location.hash = `tasks/${encodeURIComponent(taskId)}`;
+    setActiveTab("tasks");
+    setSelectedTaskId(taskId);
   }
 
   function startNewChat() {
@@ -429,6 +629,10 @@ export default function App() {
     });
   }
 
+  function updateTask(task) {
+    setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+  }
+
   function applySettings(result) {
     setToolState((current) => ({
       ...current,
@@ -452,6 +656,31 @@ export default function App() {
       ...current,
       app: current.app ? { ...current.app, quizAttempts: [attempt, ...(current.app.quizAttempts || [])] } : current.app
     }));
+  }
+
+  function recordTaskExecution(taskId, evidence) {
+    setTaskExecutionEvidence((current) => ({ ...current, [taskId]: evidence }));
+  }
+
+  async function sendMascotMessage({ question, context, signal, onEvent }) {
+    const created = await requestJson("/api/assistant/chats", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        label: `Помощь · ${context.surface}`,
+        ...(context.surface === "task" && context.taskId ? { taskId: context.taskId } : {})
+      })
+    });
+    const content = buildMascotAssistantPrompt(question, context);
+    await requestJson(`/api/assistant/chats/${encodeURIComponent(created.chat.id)}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ role: "user", content })
+    });
+    const result = await requestAssistantStream(created.chat.id, signal, onEvent);
+    if (result.task) setTasks((current) => [result.task, ...current.filter((task) => task.id !== result.task.id)]);
+    if (result.test) setTests((current) => [result.test, ...current.filter((test) => test.id !== result.test.id)]);
+    return result.message;
   }
 
   async function sendMessage(event) {
@@ -507,6 +736,7 @@ export default function App() {
       const completedMessages = [...nextMessages, result.message];
       setMessages(completedMessages);
       updateChatHistory(id, completedMessages);
+      if (result.task) setTasks((current) => [result.task, ...current.filter((task) => task.id !== result.task.id)]);
       if (result.test) setTests((current) => [result.test, ...current.filter((test) => test.id !== result.test.id)]);
       const storedMemories = (result.memoryWrites || []).reduce((total, write) => total + Number(write.memory?.storedCount || 0), 0);
       const failedMemoryWrite = result.toolErrors?.find((error) => error.error === "graph_memory_write_failed");
@@ -558,6 +788,39 @@ export default function App() {
       : providerReady
         ? toolState.runtime?.ok === false ? "Runtime требует внимания" : "Куратор готов"
         : "Нужна настройка модели";
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId) || tasks[0];
+  const selectedTest = tests.find((test) => test.id === selectedTestId) || tests[0];
+  mascotContextRef.current = profileOpen
+    ? profileSection === "graph-memory"
+      ? { surface: "graph-memory", question: "Что куратор помнит", status: toolState.runtime?.graph?.ok ? "online" : "offline" }
+      : { surface: "settings", question: "Настройки учебного контура", status: providerReady ? "provider-ready" : "provider-not-configured" }
+    : activeTab === "task" || activeTab === "tasks"
+      ? { surface: "task", taskId: selectedTask?.id, question: selectedTask?.title, status: selectedTask?.status, executionEvidence: taskExecutionEvidence[selectedTask?.id] }
+      : activeTab === "tests"
+        ? { surface: "test", testId: selectedTest?.id, question: selectedTest?.topic, status: selectedTest ? `${selectedTest.questions?.length || 0} questions` : "empty" }
+        : { surface: "chat", question: messages.at(-1)?.content || "Диалог с куратором", status: curatorStatus };
+  mascotSendRef.current = sendMascotMessage;
+
+  useEffect(() => {
+    if (!toolState.app) return;
+    const mascotId = settings.mascotId || "05_laptop_spiky";
+    initMascotAssistant({
+      initialSettings: parsedMascotSettings(settings.mascotAssistantSettings),
+      mascotFrameBase: `/assets/mascots/${encodeURIComponent(mascotId)}/frames/idle`,
+      iconFrameCount: mascotId.startsWith("organic") ? 24 : 12,
+      getPageContext: () => mascotContextRef.current,
+      sendMessage: (payload) => mascotSendRef.current(payload),
+      saveSettings: async (nextSettings) => {
+        const result = await requestJson("/api/settings", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mascotAssistantSettings: JSON.stringify(nextSettings) })
+        });
+        applySettings(result);
+      }
+    });
+  }, [settings.mascotAssistantSettings, settings.mascotId, toolState.app]);
+
   const profileOverlay = (
     <ProfileOverlay
       open={profileOpen}
@@ -567,6 +830,8 @@ export default function App() {
       requestJson={requestJson}
       onSettingsSaved={applySettings}
       onRuntimeUpdated={applyRuntime}
+      onSectionChange={setProfileSection}
+      onOpened={raiseMascotAssistant}
     />
   );
 
@@ -607,7 +872,7 @@ export default function App() {
   return (
     <>
       <main className="appShell chatMode">
-        <aside className={`chatSidebar ${sidebarOpen ? "open" : ""}`} aria-label={activeTab === "tests" ? "Навигация по тестам" : "История диалогов"}>
+        <aside className={`chatSidebar ${sidebarOpen ? "open" : ""}`} aria-label={activeTab === "tests" ? "Навигация по тестам" : activeTab === "tasks" ? "Навигация по задачам" : "История диалогов"}>
           <div className="sidebarHeader">
             <button className="sidebarHandle" type="button" aria-label={sidebarOpen ? "Свернуть боковую панель" : "Открыть боковую панель"} aria-expanded={sidebarOpen} onMouseDown={(event) => event.preventDefault()} onClick={() => setSidebarOpen((current) => !current)}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" /></svg>
@@ -619,17 +884,22 @@ export default function App() {
           </div>
           <nav className="workspaceNav" aria-label="Рабочие разделы">
             <button type="button" aria-current={activeTab === "chat" ? "page" : undefined} onClick={() => showTab("chat")}>Чаты</button>
-            <button type="button" disabled>Задачи <small>soon</small></button>
+            <button type="button" aria-current={activeTab === "tasks" ? "page" : undefined} onClick={() => showTab("tasks")}>Задачи {tasks.length ? <small>{tasks.length}</small> : null}</button>
             <button type="button" aria-current={activeTab === "tests" ? "page" : undefined} onClick={() => showTab("tests")}>Тесты {tests.length ? <small>{tests.length}</small> : null}</button>
           </nav>
-        <nav className={`chatHistory ${activeTab === "tests" ? "testHistory" : ""}`} aria-label={activeTab === "tests" ? "Сохранённые тесты" : "Сохранённые чаты"}>
-          <p className="sidebarLabel">{activeTab === "tests" ? "Мои тесты" : "Недавние"}</p>
+        <nav className={`chatHistory ${activeTab !== "chat" ? "testHistory" : ""}`} aria-label={activeTab === "tests" ? "Сохранённые тесты" : activeTab === "tasks" ? "Сохранённые задачи" : "Сохранённые чаты"}>
+          <p className="sidebarLabel">{activeTab === "tests" ? "Мои тесты" : activeTab === "tasks" ? "Мои задачи" : "Недавние"}</p>
           {activeTab === "tests" ? tests.map((test) => (
             <button type="button" key={test.id} aria-current={test.id === (selectedTestId || tests[0]?.id) ? "page" : undefined} onClick={() => openTest(test.id)}>
               <strong>{test.topic}</strong>
               <span>{test.level} · {test.questions.length} вопросов</span>
             </button>
-          )) : chatHistory.length ? chatHistory.map((chat) => (
+          )) : activeTab === "tasks" ? tasks.map((task) => (
+            <button type="button" key={task.id} aria-current={task.id === (selectedTaskId || tasks[0]?.id) ? "page" : undefined} onClick={() => openTask(task.id)}>
+              <strong>{task.title}</strong>
+              <span>{task.language || "python"} · {task.status}</span>
+            </button>
+          )) : chatHistory.some((chat) => !chat.taskId && !isMascotChat(chat)) ? chatHistory.filter((chat) => !chat.taskId && !isMascotChat(chat)).map((chat) => (
             <button
               type="button"
               key={chat.id}
@@ -641,17 +911,20 @@ export default function App() {
             </button>
           )) : <span className="historyEmpty">История появится после первого сообщения.</span>}
           {activeTab === "tests" && !tests.length ? <span className="historyEmpty">Попросите куратора сформировать первый тест.</span> : null}
+          {activeTab === "tasks" && !tasks.length ? <span className="historyEmpty">Попросите куратора создать первую задачу.</span> : null}
         </nav>
           <ProfileTrigger settings={settings} onClick={() => setProfileOpen(true)} />
         </aside>
 
-        <section className={`chatSurface ${activeTab === "tests" ? "testsMode" : ""}`} aria-label={activeTab === "tests" ? "Тесты" : "Куратор LLM"}>
+        <section className={`chatSurface ${activeTab === "tests" ? "testsMode" : activeTab === "tasks" ? "tasksMode" : ""}`} aria-label={activeTab === "tests" ? "Тесты" : activeTab === "tasks" ? "Задачи" : "Куратор LLM"}>
           <div className={`curatorStatus ${providerReady && toolState.runtime?.ok !== false ? "ready" : ""}`} role="status">
-            <span aria-hidden="true" />{activeTab === "tests" ? `${tests.length} сохранено` : curatorStatus}
+            <span aria-hidden="true" />{activeTab === "tests" ? `${tests.length} сохранено` : activeTab === "tasks" ? `${tasks.length} задач` : curatorStatus}
           </div>
 
         {activeTab === "tests" ? (
           <QuizView tests={tests} selectedTestId={selectedTestId} requestJson={requestJson} onAttemptSaved={recordQuizAttempt} />
+        ) : activeTab === "tasks" ? (
+          <TaskView tasks={tasks} selectedTaskId={selectedTaskId} chats={chatHistory} mascotId={settings.mascotId} requestJson={requestJson} onTaskUpdated={updateTask} onChatUpdated={updateChatHistory} onExecutionEvidence={recordTaskExecution} />
         ) : <>
         <div className="chatThread" aria-live="polite" aria-busy={sending}>
           {toolState.loading ? (
@@ -677,6 +950,7 @@ export default function App() {
               {message.content ? <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.content) }} /> : message.streaming ? <p className="streamWaiting"><span className="thinkingDot" />Обдумываю ответ</p> : null}
               {message.interrupted ? <span className="streamInterrupted">Ответ прерван · не сохранён</span> : null}
               {message.action?.type === "open_test" ? <button className="messageAction" type="button" onClick={() => openTest(message.action.targetId)}>{message.action.label}</button> : null}
+              {message.action?.type === "open_task" ? <button className="messageAction" type="button" onClick={() => openTask(message.action.targetId)}>{message.action.label}</button> : null}
             </article>
           ))}
           {toolState.error ? <p className="backendError" role="alert">Не удалось загрузить чат: {toolState.error}</p> : null}

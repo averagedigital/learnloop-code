@@ -17,7 +17,7 @@
     "runtime:memory": "docker compose -f docker-compose.workspace.yml up falkordb graph-memory",
     "runtime:all": "docker compose -f docker-compose.workspace.yml up -d --build code-server openhands falkordb graph-memory",
     "runtime:down": "docker compose -f docker-compose.workspace.yml down",
-    "test": "node tests/self-check.mjs && node tests/persistence-api-check.mjs && node tests/chat-tool-loop-check.mjs && node tests/chat-stream-check.mjs && python3 tests/memory-service-check.py"
+    "test": "node tests/self-check.mjs && node tests/persistence-api-check.mjs && node tests/chat-tool-loop-check.mjs && node tests/chat-stream-check.mjs && node tests/coding-task-check.mjs && python3 tests/memory-service-check.py"
   },
   "keywords": [],
   "author": "",

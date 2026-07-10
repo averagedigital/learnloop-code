@@ -84,15 +84,34 @@ export const llmTools = [
   {
     type: "function",
     name: "create_task",
-    description: "Сформировать техлид-задание на разработку кодовой базы.",
+    description: "Создать и сохранить проверяемую coding-задачу для изолированного allowlisted runtime. Самостоятельно выбери подходящий поддерживаемый язык и реализацию.",
     parameters: {
       type: "object",
       properties: {
-        topic: { type: "string" },
-        constraints: { type: "array", items: { type: "string" } },
-        expected_deliverable: { type: "string" }
+        title: { type: "string", minLength: 2, maxLength: 200 },
+        description: { type: "string", minLength: 10, maxLength: 10000 },
+        language: { type: "string", enum: ["python", "javascript"] },
+        starterCode: { type: "string", minLength: 1, maxLength: 20000 },
+        acceptanceCriteria: { type: "array", minItems: 1, maxItems: 10, items: { type: "string", minLength: 1, maxLength: 500 } },
+        publicChecks: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: "object",
+            properties: {
+              message: { type: "string", minLength: 1, maxLength: 400 },
+              code: { type: "string", minLength: 1, maxLength: 4000 }
+            },
+            required: ["message", "code"],
+            additionalProperties: false
+          }
+        },
+        hints: { type: "array", maxItems: 10, items: { type: "string", minLength: 1, maxLength: 1000 } },
+        difficulty: { type: "string", enum: ["лёгкая", "средняя", "сложная"] },
+        estimatedMinutes: { type: "integer", minimum: 5, maximum: 180 }
       },
-      required: ["topic"],
+      required: ["title", "description", "language", "starterCode", "acceptanceCriteria", "publicChecks"],
       additionalProperties: false
     }
   },
@@ -229,7 +248,7 @@ export const llmTools = [
 ];
 
 export function toolsForProvider(mode) {
-  const executableTools = llmTools.filter((tool) => ["create_test", "remember_context"].includes(tool.name));
+  const executableTools = llmTools.filter((tool) => ["create_task", "create_test", "remember_context"].includes(tool.name));
   if (mode === "openai-chat-compatible") {
     return executableTools.map(({ name, description, parameters }) => ({
       type: "function",

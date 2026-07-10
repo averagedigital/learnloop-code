@@ -55,9 +55,9 @@ try {
   assert.match(four.message.content, /4 вопрос/);
   assert.doesNotMatch(four.message.content, /Вопрос 1|Вариант A|Объяснение 1|правильн/i);
   const firstChatRequest = providerRequests.find((request) => request.path === "/chat/completions" && !request.body.messages.some((message) => message.role === "tool"));
-  assert.deepEqual(firstChatRequest.body.tools.map((tool) => tool.function.name), ["create_test", "remember_context"]);
+  assert.deepEqual(firstChatRequest.body.tools.map((tool) => tool.function.name), ["create_task", "create_test", "remember_context"]);
   assert.equal(firstChatRequest.body.parallel_tool_calls, false);
-  assert.equal(firstChatRequest.body.tools[0].function.parameters.properties.questions.minItems, 4);
+  assert.equal(firstChatRequest.body.tools[1].function.parameters.properties.questions.minItems, 4);
   assert.match(firstChatRequest.body.messages[0].content, /Короткие примеры на JavaScript/);
   assert.match(firstChatRequest.body.messages[0].content, /Предпочитает JavaScript-примеры/);
   assert.doesNotMatch(firstChatRequest.body.messages[0].content, /should-not-reach-provider|PENDING_MEMORY_MUST_NOT_REACH_PROVIDER/);
@@ -83,7 +83,7 @@ try {
   assert.equal(fifteen.memory.graph.ok, true);
   assert.ok(graphSearches.some((search) => search.query.includes("замыкания")));
   const responsesInitial = providerRequests.find((request) => request.path === "/responses" && !request.body.input.some((item) => item.type === "function_call_output"));
-  assert.deepEqual(responsesInitial.body.tools.map((tool) => tool.name), ["create_test", "remember_context"]);
+  assert.deepEqual(responsesInitial.body.tools.map((tool) => tool.name), ["create_task", "create_test", "remember_context"]);
   assert.equal(responsesInitial.body.parallel_tool_calls, false);
   assert.match(responsesInitial.body.instructions, /Graph memory: путает lexical scope/);
   const responsesFinal = providerRequests.find((request) => request.path === "/responses" && request.body.input.some((item) => item.type === "function_call_output"));
