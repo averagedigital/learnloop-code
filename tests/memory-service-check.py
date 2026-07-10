@@ -1,7 +1,6 @@
 import asyncio
 import os
 import sys
-from datetime import timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -9,16 +8,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import memory_service.service as service
 from memory_service.service import (
     bounded_limit,
-    event_to_episode,
-    graphiti_provider,
-    has_graphiti_credentials,
+    embedding_provider,
+    embedding_settings,
+    event_to_record,
+    has_embedding_credentials,
     health_status,
     parse_json_bytes,
-    result_to_memory,
+    row_to_graph_item,
+    row_to_memory,
     run_async,
     validate_events,
     yandex_embedding_input,
-    yandex_graphiti_settings,
 )
 
 
@@ -26,34 +26,45 @@ event = {
     "id": "mem-1",
     "kind": "weak_topic",
     "text": "Путает missing flag и fillna",
-    "source": "task_run",
-    "evidence": {"taskId": "fill-and-flag"},
+    "source": "assistant_chat",
+    "evidence": {
+        "projectId": "fill-and-flag",
+        "graph": {"subject": "user", "relation": "struggles_with", "object": "missing value handling"},
+    },
     "reviewStatus": "accepted",
     "createdAt": "2026-07-03T10:00:00Z",
 }
 
-episode = event_to_episode(event)
+record = event_to_record(event)
+assert record == {
+    "uuid": "mem-1",
+    "subject": "user",
+    "relation": "struggles_with",
+    "object": "missing value handling",
+    "fact": "Путает missing flag и fillna",
+    "group_id": "fill-and-flag",
+    "created_at": "2026-07-03T10:00:00Z",
+}
 
-assert episode["name"] == "codelearn_memory_mem-1"
-assert episode["group_id"] == "fill-and-flag"
-assert '"reviewStatus": "accepted"' in episode["body"]
-assert '"taskId": "fill-and-flag"' in episode["body"]
-assert episode["reference_time"].tzinfo == timezone.utc
+fallback = event_to_record({**event, "source": "manual", "evidence": {"taskId": "task-1"}})
+assert fallback["subject"] == "user"
+assert fallback["relation"] == "weak_topic"
+assert fallback["object"] == event["text"]
+assert fallback["group_id"] == "task-1"
 
-
-class Result:
-    uuid = "edge-1"
-    fact = "Путает порядок fillna и missing flag"
-    valid_at = None
-    invalid_at = None
-
-
-memory = result_to_memory(Result())
-assert memory == {
+assert row_to_memory(["edge-1", "Путает порядок fillna и missing flag", "", ""]) == {
     "uuid": "edge-1",
     "fact": "Путает порядок fillna и missing flag",
     "validAt": "",
     "invalidAt": "",
+}
+assert row_to_graph_item(["edge-1", "user", "struggles_with", "data leakage", "Путает data leakage", "2026-07-10T09:00:00Z"]) == {
+    "uuid": "edge-1",
+    "subject": "user",
+    "relation": "struggles_with",
+    "object": "data leakage",
+    "fact": "Путает data leakage",
+    "createdAt": "2026-07-10T09:00:00Z",
 }
 
 assert bounded_limit("3") == 3
@@ -68,6 +79,10 @@ assert validate_events(["bad"]) == "invalid_memory_event"
 assert validate_events([{**event, "kind": "random_note"}]) == "invalid_memory_event_kind"
 assert validate_events([{**event, "source": "random_source"}]) == "invalid_memory_event_source"
 assert validate_events([{**event, "evidence": ["task"]}]) == "invalid_memory_event_evidence"
+assert validate_events([{**event, "evidence": {"graph": {"subject": "user", "relation": "prefers"}}}]) == "invalid_memory_graph"
+assert validate_events([{**event, "evidence": {"graph": {"subject": "user", "relation": "prefers", "object": "x", "extra": "no"}}}]) == "invalid_memory_graph"
+assert validate_events([{**event, "evidence": {"graph": {"subject": "user", "relation": "prefers", "object": "OPENAI_API_KEY=do-not-store"}}}]) == "sensitive_memory_data"
+assert validate_events([{**event, "text": "OPENAI_API_KEY=do-not-store"}]) == "sensitive_memory_data"
 assert validate_events([{**event, "text": "x" * 5001}]) == "memory_event_too_large"
 assert validate_events([{**event, "evidence": {"blob": "x" * 20001}}]) == "memory_event_too_large"
 assert "run_until_complete" in run_async.__code__.co_names
@@ -76,28 +91,44 @@ assert yandex_embedding_input(b"text") == "text"
 assert yandex_embedding_input(["a", "b"]) == '["a", "b"]'
 
 
-async def ready_client():
-    return object(), object()
+class FakeGraph:
+    def __init__(self, error=None):
+        self.error = error
+
+    async def ro_query(self, _query, _params=None):
+        if self.error:
+            raise self.error
+        return object()
 
 
-async def broken_client():
-    raise RuntimeError("falkor unavailable")
+async def ready_graph_client():
+    return FakeGraph()
 
 
-original_graphiti_client = service.graphiti_client
+async def broken_graph_client():
+    return FakeGraph(RuntimeError("falkor unavailable"))
+
+
+original_graph_client = service.graph_client
 managed_env = [
     "OPENAI_API_KEY",
     "OPENAI_ADMIN_KEY",
-    "GRAPHITI_LLM_PROVIDER",
+    "OPENROUTER_API_KEY",
+    "GRAPH_OPENAI_API_KEY",
+    "GRAPH_OPENROUTER_API_KEY",
+    "GRAPH_YANDEX_AI_STUDIO_API_KEY",
+    "GRAPH_YANDEX_AI_STUDIO_FOLDER_ID",
     "YANDEX_AI_STUDIO_API_KEY",
     "YANDEX_AI_STUDIO_FOLDER_ID",
-    "YANDEX_AI_STUDIO_BASE_URL",
-    "YANDEX_GRAPHITI_EMBEDDING_URL",
-    "YANDEX_GRAPHITI_MODEL",
-    "YANDEX_GRAPHITI_SMALL_MODEL",
-    "YANDEX_GRAPHITI_EMBEDDING_MODEL",
-    "YANDEX_GRAPHITI_EMBEDDING_DIM",
-    "YANDEX_GRAPHITI_MAX_TOKENS",
+    "GRAPH_EMBEDDING_PROVIDER",
+    "GRAPH_EMBEDDING_BASE_URL",
+    "GRAPH_EMBEDDING_MODEL",
+    "GRAPH_EMBEDDING_DIM",
+    # Compatibility names must remain readable for existing local settings.
+    "GRAPHITI_LLM_PROVIDER",
+    "GRAPHITI_EMBEDDING_BASE_URL",
+    "GRAPHITI_EMBEDDING_MODEL",
+    "GRAPHITI_EMBEDDING_DIM",
 ]
 original_env = {key: os.environ.get(key) for key in managed_env}
 try:
@@ -106,38 +137,40 @@ try:
     status, payload = asyncio.run(health_status())
     assert status == 503
     assert payload["error"] == "missing_graph_memory_credentials"
-    assert graphiti_provider() == "openai"
-    assert has_graphiti_credentials() is False
+    assert embedding_provider() == "openai"
+    assert has_embedding_credentials() is False
 
+    os.environ["OPENROUTER_API_KEY"] = "test-openrouter-key"
+    assert embedding_provider() == "openrouter"
+    assert has_embedding_credentials() is True
+    openrouter_settings = embedding_settings()
+    assert openrouter_settings["base_url"] == "https://openrouter.ai/api/v1"
+    assert openrouter_settings["model"] == "openai/text-embedding-3-small"
+    assert openrouter_settings["embedding_dim"] == 1536
+
+    os.environ.pop("OPENROUTER_API_KEY")
     os.environ["YANDEX_AI_STUDIO_API_KEY"] = "test-yandex-key"
     os.environ["YANDEX_AI_STUDIO_FOLDER_ID"] = "folder-123"
-    assert graphiti_provider() == "yandex"
-    assert has_graphiti_credentials() is True
-    yandex_settings = yandex_graphiti_settings()
-    assert yandex_settings["base_url"] == "https://ai.api.cloud.yandex.net/v1"
-    assert yandex_settings["embedding_url"] == "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding"
-    assert yandex_settings["model"] == "gpt://folder-123/deepseek-v4-flash"
-    assert yandex_settings["small_model"] == "gpt://folder-123/deepseek-v4-flash"
-    assert yandex_settings["embedding_model"] == "emb://folder-123/text-embeddings-v2-doc"
+    assert embedding_provider() == "yandex"
+    assert has_embedding_credentials() is True
+    yandex_settings = embedding_settings()
+    assert yandex_settings["base_url"] == "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding"
+    assert yandex_settings["model"] == "emb://folder-123/text-embeddings-v2-doc"
     assert yandex_settings["embedding_dim"] == 256
-    assert yandex_settings["max_tokens"] == 4096
-    assert yandex_settings["structured_output_mode"] == "json_object"
 
-    for key in managed_env:
-        os.environ.pop(key, None)
-
-    service.graphiti_client = ready_client
+    service.graph_client = ready_graph_client
     status, payload = asyncio.run(health_status())
     assert status == 200
     assert payload["ready"] is True
+    assert payload["mode"] == "direct-triples"
 
-    service.graphiti_client = broken_client
+    service.graph_client = broken_graph_client
     status, payload = asyncio.run(health_status())
     assert status == 503
-    assert payload["error"] == "graphiti_unavailable"
+    assert payload["error"] == "graph_memory_unavailable"
     assert "falkor unavailable" in payload["message"]
 finally:
-    service.graphiti_client = original_graphiti_client
+    service.graph_client = original_graph_client
     for key, value in original_env.items():
         if value is None:
             os.environ.pop(key, None)

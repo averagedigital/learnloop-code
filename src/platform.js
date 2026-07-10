@@ -99,15 +99,64 @@ export const llmTools = [
   {
     type: "function",
     name: "create_test",
-    description: "Сформировать тест из 10 вопросов по заданной теме.",
+    description: "Создать и сохранить учебный тест из 4-15 вопросов по заданной теме.",
     parameters: {
       type: "object",
       properties: {
-        topic: { type: "string" },
-        level: { type: "string" },
-        include_answers: { type: "boolean" }
+        topic: { type: "string", minLength: 2, maxLength: 200 },
+        level: { type: "string", minLength: 2, maxLength: 80 },
+        questions: {
+          type: "array",
+          minItems: 4,
+          maxItems: 15,
+          items: {
+            type: "object",
+            properties: {
+              prompt: { type: "string", minLength: 2, maxLength: 2000 },
+              options: {
+                type: "array",
+                minItems: 2,
+                maxItems: 6,
+                items: { type: "string", minLength: 1, maxLength: 500 }
+              },
+              correctAnswer: { type: "integer", minimum: 0, maximum: 5 },
+              explanation: { type: "string", minLength: 1, maxLength: 2000 }
+            },
+            required: ["prompt", "options", "correctAnswer", "explanation"],
+            additionalProperties: false
+          }
+        }
       },
-      required: ["topic"],
+      required: ["topic", "level", "questions"],
+      additionalProperties: false
+    }
+  },
+  {
+    type: "function",
+    name: "remember_context",
+    description: "Самостоятельно сохранить в Graph Memory несколько устойчивых наблюдений, полезных в будущих диалогах. Не использовать для временного контекста, секретов и чувствительных персональных данных.",
+    parameters: {
+      type: "object",
+      properties: {
+        memories: {
+          type: "array",
+          minItems: 1,
+          maxItems: 4,
+          items: {
+            type: "object",
+            properties: {
+              category: { type: "string", enum: ["preference", "skill", "project", "habit"] },
+              text: { type: "string", minLength: 2, maxLength: 1000 },
+              subject: { type: "string", minLength: 1, maxLength: 200 },
+              relation: { type: "string", minLength: 1, maxLength: 120 },
+              object: { type: "string", minLength: 1, maxLength: 500 }
+            },
+            required: ["category", "text", "subject", "relation", "object"],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ["memories"],
       additionalProperties: false
     }
   },
@@ -180,13 +229,14 @@ export const llmTools = [
 ];
 
 export function toolsForProvider(mode) {
+  const executableTools = llmTools.filter((tool) => ["create_test", "remember_context"].includes(tool.name));
   if (mode === "openai-chat-compatible") {
-    return llmTools.map(({ name, description, parameters }) => ({
+    return executableTools.map(({ name, description, parameters }) => ({
       type: "function",
-      function: { name, description, parameters }
+      function: { name, description, parameters, strict: true }
     }));
   }
-  return llmTools;
+  return executableTools.map((tool) => ({ ...tool, strict: true }));
 }
 
 export function extractGeneratedJsonText(text) {
@@ -214,6 +264,8 @@ export const modelControlPrompt = `Ты — LLM-куратор CodeLearnML и о
 Работай от доступного контекста и явно отделяй факты от предположений. Не выдумывай файлы, результаты запуска, backend-возможности или выполненные действия. Если для вывода нужны код, логи или контракт, кратко запроси их. Результаты детерминированных проверок считай источником истины.
 
 Самостоятельно решай, когда использовать доступные инструменты. Вызывай инструмент только если он реально приближает результат; не имитируй tool-вызов текстом и не заявляй, что действие выполнено, пока не получен результат инструмента. Для чувствительных или необратимых действий сначала запрашивай подтверждение. Если нужного инструмента нет, честно объясни ограничение и продолжи полезным ответом без ложного успеха.
+
+Самостоятельно вызывай remember_context, когда в диалоге появляется устойчивое предпочтение пользователя, полезное наблюдение о навыке, долговременный проектный контекст или повторяющаяся рабочая привычка. Формулируй наблюдения кратко и самостоятельно; не жди специальной команды «запомни». Не сохраняй одноразовые вопросы, предположения, весь prompt целиком, API keys, пароли, контакты и иные чувствительные данные. За один ответ сохраняй не более четырёх независимых наблюдений и считай запись состоявшейся только при успешном tool output.
 
 Отвечай на языке пользователя. Для кода используй профессиональный Markdown, компактные объяснения и проверяемые примеры. Не раскрывай скрытые тесты и не сохраняй чувствительные данные в персонализацию. Обновляй память только устойчивыми наблюдениями, полезными для будущей работы.`;
 

@@ -94,7 +94,7 @@ button:disabled {
   gap: 14px;
   height: calc(100vh - 24px);
   width: 268px;
-  padding: 76px 16px 16px;
+  padding: 16px;
   border: 1px solid var(--chat-line);
   border-right: 0;
   border-radius: 24px 0 0 24px;
@@ -112,34 +112,33 @@ button:disabled {
   box-shadow: 18px 0 54px rgba(0, 0, 0, 0.34);
 }
 
-.chatSidebar > :not(.sidebarHandle) {
+.chatSidebar > :not(.sidebarHeader),
+.sidebarHeader > :not(.sidebarHandle) {
   opacity: 0;
   pointer-events: none;
   transform: translateX(-8px);
   transition: opacity 140ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.chatSidebar:is(:hover, :focus-within, .open) > :not(.sidebarHandle) {
+.chatSidebar:is(:hover, :focus-within, .open) > :not(.sidebarHeader),
+.chatSidebar:is(:hover, :focus-within, .open) .sidebarHeader > :not(.sidebarHandle) {
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);
 }
 
 .sidebarHandle {
-  position: absolute;
-  z-index: 3;
-  top: 20px;
-  left: 13px;
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
   padding: 0;
-  border: 1px solid var(--chat-line-strong);
-  border-radius: 12px;
-  background: rgba(249, 204, 115, 0.08);
+  border: 1px solid var(--chat-line);
+  border-radius: 10px;
+  background: rgba(249, 245, 242, 0.035);
   color: var(--chat-accent);
-  transition: opacity 120ms cubic-bezier(0.23, 1, 0.32, 1), transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+  transition: border-color 140ms cubic-bezier(0.23, 1, 0.32, 1), background 140ms cubic-bezier(0.23, 1, 0.32, 1), transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .sidebarHandle svg {
@@ -155,22 +154,28 @@ button:disabled {
   transform: scale(0.97);
 }
 
+.sidebarHandle:hover {
+  border-color: var(--chat-line-strong);
+  background: rgba(249, 204, 115, 0.08);
+}
+
 .sidebarHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
 }
 
 .sidebarBrand {
   display: inline-flex;
-  width: fit-content;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--chat-accent);
   font-family: var(--font-display);
-  font-size: 30px;
+  font-size: 26px;
   font-weight: 900;
   line-height: 0.78;
   letter-spacing: 0.02em;
@@ -184,8 +189,8 @@ button:disabled {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 42px;
-  height: 42px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 1px solid var(--chat-line-strong);
   border-radius: 10px;
@@ -317,6 +322,29 @@ button:disabled {
   padding: 10px 4px;
   color: var(--chat-muted);
   font: 12px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+.testHistory button {
+  display: grid;
+  gap: 5px;
+  padding-block: 10px;
+  white-space: normal;
+}
+
+.testHistory button strong {
+  overflow: hidden;
+  color: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.testHistory button span {
+  color: var(--chat-muted);
+  font: 9px/1.2 var(--font-mono);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .profileTrigger {
@@ -840,6 +868,8 @@ button:disabled {
 .chatMessage p,
 .chatMarkdown {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
   color: var(--chat-text);
   font: 400 16px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   overflow-wrap: anywhere;
@@ -892,6 +922,17 @@ button:disabled {
   text-underline-offset: 4px;
 }
 
+.chatMarkdown blockquote {
+  margin: 18px 0;
+  padding: 2px 0 2px 16px;
+  border-left: 2px solid var(--chat-violet);
+  color: var(--chat-secondary);
+}
+
+.chatMarkdown blockquote p {
+  color: inherit;
+}
+
 .chatMarkdown :not(pre) > code {
   padding: 2px 6px;
   border: 1px solid rgba(133, 132, 189, 0.24);
@@ -909,7 +950,9 @@ button:disabled {
   border-radius: 12px;
   background: #090c0f;
   color: #eeeaf1;
-  overflow: auto;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .chatMarkdown .mascotAssistantCode::before {
@@ -919,7 +962,8 @@ button:disabled {
   color: var(--chat-muted);
   font: 600 9px/1 var(--font-mono);
   letter-spacing: 0.12em;
-  content: "CODE /";
+  content: attr(data-language) " /";
+  text-transform: uppercase;
 }
 
 .chatMarkdown .mascotAssistantCode code {
@@ -929,6 +973,11 @@ button:disabled {
   font: 13px/1.65 var(--font-mono);
   white-space: pre;
 }
+
+.syntaxKeyword { color: var(--chat-violet); font-weight: 650; }
+.syntaxString { color: var(--chat-accent); }
+.syntaxNumber { color: var(--color-hi-vis-yellow); }
+.syntaxComment { color: var(--chat-muted); font-style: italic; }
 
 .markdownTableWrap {
   max-width: 100%;
@@ -972,6 +1021,27 @@ button:disabled {
   text-align: center;
 }
 
+.messageAction {
+  width: fit-content;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--chat-line-strong);
+  border-radius: 10px;
+  background: rgba(249, 204, 115, 0.08);
+  color: var(--chat-accent);
+  font: 650 12px/1 var(--font-mono);
+  transition: border-color 160ms cubic-bezier(0.23, 1, 0.32, 1), background 160ms cubic-bezier(0.23, 1, 0.32, 1), transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.messageAction:hover {
+  border-color: var(--chat-accent);
+  background: rgba(249, 204, 115, 0.14);
+}
+
+.messageAction:active {
+  transform: scale(0.97);
+}
+
 .chatMessage.pending p {
   color: var(--chat-muted);
 }
@@ -992,6 +1062,258 @@ button:disabled {
   margin: 0;
   color: #f1a79f;
   font: 12px/1.45 var(--font-mono);
+}
+
+.memoryNotice {
+  margin: 0 0 6px;
+  color: var(--chat-muted);
+  font: 10px/1.4 var(--font-mono);
+}
+
+.testsMode {
+  display: block;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.testsView,
+.testsEmpty {
+  width: min(1040px, 100%);
+  min-width: 0;
+  margin: 0 auto;
+  padding: 78px 8px 64px;
+}
+
+.testsEmpty {
+  display: grid;
+  place-content: center;
+  min-height: 100%;
+  text-align: center;
+}
+
+.testsEmpty h2 {
+  margin: 0;
+  color: var(--chat-violet);
+  font: 900 clamp(48px, 7vw, 84px)/0.88 var(--font-display);
+  text-transform: uppercase;
+  text-wrap: balance;
+}
+
+.testsEmpty > p:last-child {
+  color: var(--chat-secondary);
+}
+
+.testsHeader {
+  display: grid;
+  gap: 24px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--chat-line);
+}
+
+.testsHeader p,
+.testsHeader h1 {
+  margin: 0;
+}
+
+.testsHeader p {
+  color: var(--chat-accent);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.14em;
+}
+
+.testsHeader h1 {
+  max-width: 850px;
+  margin-top: 12px;
+  color: var(--chat-text);
+  font: 900 clamp(44px, 6vw, 82px)/0.88 var(--font-display);
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  text-wrap: balance;
+}
+
+.testsHeader > div > span {
+  display: block;
+  margin-top: 14px;
+  color: var(--chat-muted);
+  font: 11px/1 var(--font-mono);
+  text-transform: uppercase;
+}
+
+.quizCard,
+.quizResultCard {
+  width: min(720px, 100%);
+  min-width: 0;
+  margin: 42px auto 0;
+  padding: clamp(22px, 4vw, 40px);
+  border: 1px solid var(--chat-line-strong);
+  border-radius: 22px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.045), rgba(133, 132, 189, 0.055));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.18);
+}
+
+.quizProgress,
+.quizCardFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--chat-muted);
+  font: 600 10px/1.3 var(--font-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.quizProgress strong {
+  color: var(--chat-accent);
+}
+
+.quizProgressTrack {
+  height: 3px;
+  margin-top: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--chat-line);
+}
+
+.quizProgressTrack span {
+  display: block;
+  height: 100%;
+  background: var(--chat-accent);
+  transition: width 220ms ease;
+}
+
+.quizCard h2 {
+  margin: 34px 0 0;
+  color: var(--chat-text);
+  font-size: clamp(22px, 3vw, 34px);
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+.quizOptions {
+  display: grid;
+  gap: 10px;
+  margin-top: 28px;
+}
+
+.quizOption {
+  width: 100%;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--chat-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--chat-secondary);
+  font: inherit;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quizOption:hover:not(:disabled) {
+  border-color: var(--chat-accent);
+  color: var(--chat-text);
+}
+
+.quizOption:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.quizOption.correct,
+.quizOption.correctAnswer {
+  border-color: rgba(112, 201, 151, 0.72);
+  background: rgba(112, 201, 151, 0.13);
+  color: #b9f2cf;
+}
+
+.quizOption.incorrect {
+  border-color: rgba(216, 110, 99, 0.78);
+  background: rgba(216, 110, 99, 0.14);
+  color: #f1b0aa;
+}
+
+.quizOption.muted {
+  opacity: 0.44;
+}
+
+.quizExplanation {
+  margin: 18px 0 0;
+  padding-left: 14px;
+  border-left: 2px solid currentColor;
+  color: var(--chat-secondary);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.quizExplanation.correct { color: #8bd8ad; }
+.quizExplanation.incorrect { color: #e5968d; }
+
+.quizCardFooter {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--chat-line);
+}
+
+.quizCardFooter button,
+.quizResultCard button {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--chat-line-strong);
+  border-radius: 10px;
+  background: var(--chat-accent);
+  color: var(--chat-shell);
+  font-weight: 750;
+}
+
+.quizCardFooter button:disabled {
+  opacity: 0.42;
+}
+
+.quizError {
+  margin: 14px 0 0;
+  color: #f1a79f;
+  font: 11px/1.45 var(--font-mono);
+}
+
+.quizResultCard {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+}
+
+.quizResultCard p,
+.quizResultCard h2 {
+  margin: 0;
+}
+
+.quizResultCard p {
+  color: var(--chat-accent);
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.quizResultValue {
+  margin-top: 26px;
+  color: var(--chat-text);
+  font: 900 clamp(82px, 16vw, 150px)/0.8 var(--font-display);
+}
+
+.quizResultValue span {
+  color: var(--chat-muted);
+  font-size: 0.34em;
+}
+
+.quizResultCard h2 {
+  margin-top: 18px;
+  color: var(--chat-secondary);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.quizResultCard button {
+  margin-top: 30px;
 }
 
 .backendError {
@@ -1530,7 +1852,7 @@ button:disabled {
 
 .profileStats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
   margin-top: 14px;
 }
@@ -1668,11 +1990,237 @@ button:disabled {
   min-width: 11px;
 }
 
+.activityEvents {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(25, 27, 30, 0.09);
+}
+
+.activityEventsTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.activityEventsTitle p,
+.activityEventsTitle span,
+.activityEventsEmpty {
+  margin: 0;
+}
+
+.activityEventsTitle p {
+  color: #343639;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.activityEventsTitle > span {
+  color: #8584bd;
+  font: 700 10px/1 var(--font-mono);
+}
+
+.activityEvents ol {
+  display: grid;
+  gap: 2px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activityEvents li {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 8px;
+  border-radius: 10px;
+}
+
+.activityEvents li:hover {
+  background: rgba(25, 27, 30, 0.035);
+}
+
+.activityEvents li > i {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #8584bd;
+  box-shadow: 0 0 0 1px rgba(25, 27, 30, 0.12);
+}
+
+.activityEvents li.quiz > i { background: #f9cc73; }
+.activityEvents li.memory > i { background: #8584bd; }
+.activityEvents li.task > i { background: #78bd96; }
+
+.activityEvents li > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.activityEvents li strong,
+.activityEvents li div span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activityEvents li strong {
+  color: #2c2e31;
+  font-size: 12px;
+}
+
+.activityEvents li div span {
+  color: #77736f;
+  font-size: 11px;
+}
+
+.activityEvents li b {
+  color: #343639;
+  font: 700 10px/1 var(--font-mono);
+  white-space: nowrap;
+}
+
+.activityEvents li time {
+  color: #96918c;
+  font: 9px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.activityEventsEmpty {
+  padding: 16px 8px 4px;
+  color: #85817d;
+  font-size: 12px;
+}
+
 .profileForm,
 .llmForm,
 .personalityForm {
   display: grid;
   gap: 18px;
+}
+
+.personalityWorkspace {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.6fr);
+  min-height: 500px;
+  overflow: hidden;
+  border: 1px solid rgba(25, 27, 30, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.personalityGuide {
+  padding: 26px;
+  background: #171b20;
+  color: #f9f5f2;
+}
+
+.personalityGuide p,
+.personalityGuide h3,
+.personalityGuide > span {
+  margin: 0;
+}
+
+.personalityGuide p {
+  color: #f9cc73;
+  font: 700 9px/1 var(--font-mono);
+  letter-spacing: 0.14em;
+}
+
+.personalityGuide h3 {
+  margin-top: 14px;
+  font-family: var(--font-display);
+  font-size: 34px;
+  line-height: 0.92;
+  text-transform: uppercase;
+}
+
+.personalityGuide > span {
+  display: block;
+  margin-top: 16px;
+  color: rgba(249, 245, 242, 0.62);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.personalityGuide ul {
+  display: grid;
+  gap: 8px;
+  margin: 28px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.personalityGuide li {
+  padding: 10px 12px;
+  border: 1px solid rgba(249, 245, 242, 0.09);
+  border-radius: 10px;
+  color: rgba(249, 245, 242, 0.76);
+  font: 10px/1.3 var(--font-mono);
+}
+
+.personalityEditor {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 18px;
+}
+
+.personalityEditor header,
+.personalityEditor footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.personalityEditor header {
+  padding: 2px 4px 14px;
+}
+
+.personalityEditor header strong {
+  color: #2a2c2f;
+  font-size: 14px;
+}
+
+.personalityEditor header span,
+.personalityEditor footer > span {
+  color: #85817d;
+  font: 9px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.personalityEditor textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 390px;
+  resize: vertical;
+  padding: 18px;
+  border: 1px solid rgba(25, 27, 30, 0.11);
+  border-radius: 12px;
+  outline: 0;
+  background: rgba(255, 255, 255, 0.78);
+  color: #202226;
+  font: 13px/1.7 var(--font-mono);
+}
+
+.personalityEditor textarea:focus {
+  border-color: #8584bd;
+  box-shadow: 0 0 0 3px rgba(133, 132, 189, 0.1);
+}
+
+.personalityEditor footer {
+  padding: 14px 4px 0;
+}
+
+.personalityEditor .settingsSave {
+  min-width: 112px;
 }
 
 .settingsIntro h3,
@@ -1832,6 +2380,179 @@ button:disabled {
   color: #6664a1;
 }
 
+.graphMemorySection {
+  display: grid;
+  gap: 16px;
+}
+
+.graphMemoryHero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px;
+  border-radius: 18px;
+  background: #171b20;
+  color: #f9f5f2;
+  box-shadow: inset 0 0 0 1px rgba(249, 245, 242, 0.08);
+}
+
+.graphMemoryHero p,
+.graphMemoryHero h3,
+.graphMemoryHero span {
+  margin: 0;
+}
+
+.graphMemoryHero p {
+  color: #f9cc73;
+  font: 700 9px/1 var(--font-mono);
+  letter-spacing: 0.14em;
+}
+
+.graphMemoryHero h3 {
+  margin-top: 10px;
+  font-family: var(--font-display);
+  font-size: clamp(26px, 4vw, 40px);
+  line-height: 0.95;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+.graphMemoryHeroMeta {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 2px 7px;
+  min-width: 112px;
+}
+
+.graphMemoryHeroMeta strong {
+  color: #f9cc73;
+  font: 700 30px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.graphMemoryHeroMeta > span {
+  color: rgba(249, 245, 242, 0.58);
+  font-size: 11px;
+}
+
+.graphMemoryHeroMeta button,
+.graphMemoryState button {
+  min-height: 40px;
+  padding: 0 13px;
+  border: 1px solid rgba(249, 245, 242, 0.14);
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.graphMemoryHeroMeta button {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  background: rgba(249, 245, 242, 0.07);
+  color: #f9f5f2;
+}
+
+.graphMemoryHeroMeta button:hover {
+  border-color: rgba(249, 204, 115, 0.6);
+  background: rgba(249, 204, 115, 0.1);
+}
+
+.memoryGraphViewport {
+  max-width: 100%;
+  overflow: auto hidden;
+  border: 1px solid rgba(25, 27, 30, 0.1);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle, rgba(249, 245, 242, 0.055) 1px, transparent 1px),
+    #111519;
+  background-size: 24px 24px;
+  scrollbar-color: rgba(249, 204, 115, 0.35) transparent;
+  scrollbar-width: thin;
+}
+
+.memoryGraph {
+  display: block;
+  width: 100%;
+  min-width: 720px;
+  height: auto;
+}
+
+.memoryGraphEdges > g > path {
+  fill: none;
+  stroke: rgba(133, 132, 189, 0.72);
+  stroke-width: 2;
+}
+
+.memoryGraph marker path {
+  fill: #f9cc73;
+}
+
+.memoryEdgeLabel rect {
+  fill: #20252b;
+  stroke: rgba(249, 204, 115, 0.34);
+}
+
+.memoryEdgeLabel text {
+  fill: #f9cc73;
+  font: 700 10px/1 var(--font-mono);
+}
+
+.memoryNode rect {
+  fill: #20262d;
+  stroke: rgba(249, 245, 242, 0.16);
+  stroke-width: 1.5;
+}
+
+.memoryNode circle {
+  fill: #8584bd;
+}
+
+.memoryNode text {
+  fill: #f9f5f2;
+  font: 650 11px/1 var(--font-mono);
+}
+
+.memoryNode.hub rect {
+  fill: #302a20;
+  stroke: rgba(249, 204, 115, 0.74);
+}
+
+.memoryNode.hub circle {
+  fill: #f9cc73;
+}
+
+.graphMemoryState {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  min-height: 130px;
+  padding: 22px;
+  border: 1px dashed rgba(25, 27, 30, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.38);
+  color: #77736f;
+  font-size: 13px;
+}
+
+.graphMemoryState strong {
+  color: #343639;
+  font-size: 15px;
+}
+
+.graphMemoryState.error {
+  border-color: rgba(216, 110, 99, 0.28);
+  background: rgba(216, 110, 99, 0.06);
+}
+
+.graphMemoryState button {
+  margin-top: 6px;
+  border-color: rgba(25, 27, 30, 0.14);
+  background: transparent;
+  color: #343639;
+}
+
 .fieldGrid {
   display: grid;
   gap: 14px;
@@ -1885,6 +2606,16 @@ button:disabled {
   border-color: rgba(25, 27, 30, 0.14);
   background: transparent;
   color: #343639;
+}
+
+.settingsActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settingsActions .settingsSecondary {
+  margin-top: 0;
 }
 
 .modelPicker {
@@ -2095,6 +2826,12 @@ button:disabled {
     transform: none;
   }
 
+  .sidebarHeader > :not(.sidebarHandle) {
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+
   .sidebarHeader {
     min-height: 38px;
   }
@@ -2247,6 +2984,41 @@ button:disabled {
     font-size: 21px;
   }
 
+  .chatMarkdown .mascotAssistantCode {
+    margin-right: 0;
+    padding: 38px 12px 14px;
+  }
+
+  .testsView,
+  .testsEmpty {
+    padding: 58px 2px 32px;
+  }
+
+  .testsHeader {
+    gap: 18px;
+    padding-bottom: 20px;
+  }
+
+  .testsHeader h1 {
+    font-size: clamp(42px, 14vw, 62px);
+  }
+
+  .quizCard,
+  .quizResultCard {
+    margin-top: 24px;
+    border-radius: 16px;
+  }
+
+  .quizCardFooter {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .quizCardFooter button,
+  .quizResultCard button {
+    width: 100%;
+  }
+
   .composerDock {
     padding: 0 0 12px;
   }
@@ -2386,12 +3158,57 @@ button:disabled {
 
   .activityPanel,
   .settingsBlock,
-  .integrationNotice {
+  .integrationNotice,
+  .graphMemoryHero {
     padding: 16px;
+  }
+
+  .graphMemoryHero {
+    display: grid;
+    align-items: start;
+  }
+
+  .graphMemoryHeroMeta {
+    grid-template-columns: auto 1fr auto;
+    width: 100%;
+  }
+
+  .graphMemoryHeroMeta button {
+    grid-column: auto;
+    margin-top: 0;
   }
 
   .activityHeader {
     display: grid;
+  }
+
+  .activityEvents li {
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+  }
+
+  .activityEvents li time {
+    grid-column: 2 / -1;
+  }
+
+  .personalityWorkspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .personalityGuide {
+    padding: 20px;
+  }
+
+  .personalityGuide ul {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 20px;
+  }
+
+  .personalityEditor {
+    padding: 14px;
+  }
+
+  .personalityEditor textarea {
+    min-height: 360px;
   }
 
   .activityWeek {

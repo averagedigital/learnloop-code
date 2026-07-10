@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { assistantMarkdownToHtml } from "./mascot-assistant.js";
 import ProfileOverlay from "./ProfileOverlay.jsx";
-import { buildProviderPayload, providers } from "./platform.js";
+import { providers } from "./platform.js";
 import { profileAvatarSrc, profileMascotFrameSrc } from "./profile.js";
 
 const starterPrompts = [
@@ -22,10 +22,12 @@ async function requestJson(url, options) {
   return data;
 }
 
-function assistantText(data) {
-  if (typeof data?.output_text === "string") return data.output_text;
-  if (typeof data?.choices?.[0]?.message?.content === "string") return data.choices[0].message.content;
-  return data?.output?.flatMap((item) => item.content || []).find((item) => typeof item.text === "string")?.text || "";
+function currentRoute() {
+  const hash = decodeURIComponent(window.location.hash.slice(1));
+  if (hash === "chat") return { tab: "chat", testId: "" };
+  if (hash === "tests") return { tab: "tests", testId: "" };
+  if (hash.startsWith("tests/")) return { tab: "tests", testId: hash.slice(6) };
+  return { tab: "home", testId: "" };
 }
 
 function CanvasNeuralFlow() {
@@ -162,16 +164,123 @@ function ProfileTrigger({ settings, onClick, compact = false }) {
   );
 }
 
+function QuizView({ tests, selectedTestId, requestJson, onAttemptSaved }) {
+  const selected = tests.find((test) => test.id === selectedTestId) || tests[0];
+  const [answers, setAnswers] = useState({});
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const [finished, setFinished] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setAnswers({});
+    setQuestionIndex(0);
+    setFinished(false);
+    setSaving(false);
+    setError("");
+  }, [selected?.id]);
+
+  if (!selected) {
+    return (
+      <div className="testsEmpty">
+        <p className="emptyEyebrow">CODELEARNML / TESTS</p>
+        <h2>Тестов пока нет</h2>
+        <p>Попроси куратора в чате: «Сформируй тест по теме».</p>
+      </div>
+    );
+  }
+
+  const score = selected.questions.reduce((total, question, index) => total + (answers[index] === question.correctAnswer ? 1 : 0), 0);
+  const question = selected.questions[questionIndex];
+  const selectedAnswer = answers[questionIndex];
+  const answered = Number.isInteger(selectedAnswer);
+
+  async function nextQuestion() {
+    if (!answered || saving) return;
+    if (questionIndex < selected.questions.length - 1) {
+      setQuestionIndex((current) => current + 1);
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const result = await requestJson(`/api/tests/${encodeURIComponent(selected.id)}/attempts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ answers: selected.questions.map((_, index) => answers[index]) })
+      });
+      setFinished(true);
+      onAttemptSaved(result.attempt);
+    } catch (requestError) {
+      setError(requestError.message || "Не удалось сохранить результат теста.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function restartTest() {
+    setAnswers({});
+    setQuestionIndex(0);
+    setFinished(false);
+    setError("");
+  }
+
+  return (
+    <div className="testsView">
+      <header className="testsHeader">
+        <div><p>CODELEARNML / TESTS</p><h1>{selected.topic}</h1><span>{selected.level} · {selected.questions.length} вопросов</span></div>
+      </header>
+      {finished ? (
+        <section className="quizResultCard" aria-live="polite">
+          <p>Тест завершён</p>
+          <strong className="quizResultValue">{score}<span> / {selected.questions.length}</span></strong>
+          <h2>правильных ответов</h2>
+          <button type="button" onClick={restartTest}>Пройти ещё раз</button>
+        </section>
+      ) : (
+        <section className="quizCard" aria-labelledby="quiz-question">
+          <div className="quizProgress">
+            <span>Вопрос {questionIndex + 1} / {selected.questions.length}</span>
+            <strong>Правильно {score} / {questionIndex + (answered ? 1 : 0)}</strong>
+          </div>
+          <div className="quizProgressTrack" aria-hidden="true"><span style={{ width: `${((questionIndex + (answered ? 1 : 0)) / selected.questions.length) * 100}%` }} /></div>
+          <h2 id="quiz-question">{question.prompt}</h2>
+          <div className="quizOptions">
+            {question.options.map((option, optionIndex) => {
+              const state = answered
+                ? optionIndex === selectedAnswer
+                  ? optionIndex === question.correctAnswer ? "correct" : "incorrect"
+                  : optionIndex === question.correctAnswer ? "correctAnswer" : "muted"
+                : "";
+              return <button className={`quizOption ${state}`} type="button" key={optionIndex} disabled={answered} aria-pressed={selectedAnswer === optionIndex} onClick={() => setAnswers((current) => ({ ...current, [questionIndex]: optionIndex }))}>{option}</button>;
+            })}
+          </div>
+          {answered ? <p className={`quizExplanation ${selectedAnswer === question.correctAnswer ? "correct" : "incorrect"}`}>{question.explanation}</p> : null}
+          <div className="quizCardFooter">
+            <span>{answered ? selectedAnswer === question.correctAnswer ? "Верно" : "Неверно" : "Выбери один ответ"}</span>
+            <button type="button" onClick={nextQuestion} disabled={!answered || saving}>{saving ? "Сохраняю…" : questionIndex === selected.questions.length - 1 ? "Завершить тест" : "Следующий вопрос"}</button>
+          </div>
+          {error ? <p className="quizError" role="alert">{error}</p> : null}
+        </section>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [frameIndex, setFrameIndex] = useState(0);
-  const [activeTab, setActiveTab] = useState(() => window.location.hash === "#chat" ? "chat" : "home");
+  const initialRoute = currentRoute();
+  const [activeTab, setActiveTab] = useState(initialRoute.tab);
+  const [selectedTestId, setSelectedTestId] = useState(initialRoute.testId);
   const [toolState, setToolState] = useState({ loading: true, error: "", app: null, runtime: null });
   const [chatHistory, setChatHistory] = useState([]);
+  const [tests, setTests] = useState([]);
   const [chatId, setChatId] = useState("");
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [composerError, setComposerError] = useState("");
+  const [memoryNotice, setMemoryNotice] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const composerRef = useRef(null);
@@ -188,15 +297,19 @@ export default function App() {
 
     async function loadChat() {
       try {
-        const [app, runtime, chats] = await Promise.all([
+        const [app, runtime, chats, savedTests] = await Promise.all([
           requestJson("/api/app-state"),
           requestJson("/api/runtime/health"),
-          requestJson("/api/assistant/chats")
+          requestJson("/api/assistant/chats"),
+          requestJson("/api/tests")
         ]);
         if (cancelled) return;
         const history = Array.isArray(chats.chats) ? chats.chats : [];
         setToolState({ loading: false, error: "", app, runtime });
         setChatHistory(history);
+        setTests(Array.isArray(savedTests.tests) ? savedTests.tests : []);
+        if (!runtime?.graph?.configured) setMemoryNotice("Graph memory не настроена. В запрос войдёт только локальная подтверждённая память.");
+        else if (!runtime.graph.ok) setMemoryNotice("Graph memory недоступна. Результаты graph retrieval не используются.");
         if (history[0]) {
           setChatId(history[0].id);
           setMessages(history[0].messages || []);
@@ -217,17 +330,28 @@ export default function App() {
   }, [activeTab, messages, sending]);
 
   useEffect(() => {
-    const syncTab = () => setActiveTab(window.location.hash === "#chat" ? "chat" : "home");
+    const syncTab = () => {
+      const route = currentRoute();
+      setActiveTab(route.tab);
+      setSelectedTestId(route.testId);
+    };
     window.addEventListener("hashchange", syncTab);
     return () => window.removeEventListener("hashchange", syncTab);
   }, []);
 
   function showTab(tab) {
-    window.location.hash = tab === "chat" ? "chat" : "";
+    window.location.hash = tab === "home" ? "" : tab;
     setActiveTab(tab);
   }
 
+  function openTest(testId) {
+    window.location.hash = `tests/${encodeURIComponent(testId)}`;
+    setActiveTab("tests");
+    setSelectedTestId(testId);
+  }
+
   function startNewChat() {
+    showTab("chat");
     setChatId("");
     setMessages([]);
     setDraft("");
@@ -236,6 +360,7 @@ export default function App() {
   }
 
   function selectChat(chat) {
+    showTab("chat");
     setChatId(chat.id);
     setMessages(chat.messages || []);
     setComposerError("");
@@ -258,6 +383,20 @@ export default function App() {
         settings: { ...current.app.settings, ...result.settings },
         providerStatus: result.providerStatus || current.app.providerStatus
       } : current.app
+    }));
+  }
+
+  function applyRuntime(runtime) {
+    setToolState((current) => ({ ...current, runtime }));
+    if (runtime?.graph?.ok) setMemoryNotice("");
+    else if (runtime?.graph?.configured) setMemoryNotice("Graph memory запускается или недоступна. Результаты graph retrieval пока не используются.");
+    else setMemoryNotice("Graph memory не настроена. Настрой её в профиле → LLM и стек.");
+  }
+
+  function recordQuizAttempt(attempt) {
+    setToolState((current) => ({
+      ...current,
+      app: current.app ? { ...current.app, quizAttempts: [attempt, ...(current.app.quizAttempts || [])] } : current.app
     }));
   }
 
@@ -293,36 +432,24 @@ export default function App() {
       });
       updateChatHistory(id, nextMessages, createdChat);
 
-      const settings = toolState.app?.settings || {};
-      const providerId = settings.providerId || "openrouter";
-      const provider = providers.find((item) => item.id === providerId);
-      const configured = toolState.app?.providerStatus?.[providerId]?.configured;
-      if (!provider || !configured || !settings.providerModel) {
-        throw new Error("Модель не настроена. Укажите provider, model и ключ в backend settings.");
-      }
-
-      const prompt = nextMessages.map((message) => `${message.role}: ${message.content}`).join("\n");
-      const payload = buildProviderPayload({
-        ...provider,
-        model: settings.providerModel,
-        baseUrl: settings.providerBaseUrl || provider.baseUrl
-      }, prompt);
-      const ai = await requestJson("/api/responses", {
+      const result = await requestJson("/api/assistant/respond", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ chatId: id })
       });
-      const reply = assistantText(ai).trim();
-      if (!reply) throw new Error("Модель не вернула текстовый ответ.");
-
-      const completedMessages = [...nextMessages, { role: "assistant", content: reply }];
+      const completedMessages = [...nextMessages, result.message];
       setMessages(completedMessages);
       updateChatHistory(id, completedMessages);
-      await requestJson(`/api/assistant/chats/${encodeURIComponent(id)}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "assistant", content: reply })
-      });
+      if (result.test) setTests((current) => [result.test, ...current.filter((test) => test.id !== result.test.id)]);
+      const storedMemories = (result.memoryWrites || []).reduce((total, write) => total + Number(write.memory?.storedCount || 0), 0);
+      const failedMemoryWrite = result.toolErrors?.find((error) => error.error === "graph_memory_write_failed");
+      if (storedMemories) setMemoryNotice(`Graph Memory обновлена: ${storedMemories} наблюдений.`);
+      else if (failedMemoryWrite) setMemoryNotice("Наблюдения сохранены локально, но Graph Memory не синхронизирована.");
+      else if (!result.memory?.graph?.configured) setMemoryNotice("Graph memory не настроена. Ответ использует только локальную подтверждённую память.");
+      else if (!result.memory.graph.ok) setMemoryNotice("Graph memory недоступна. Ответ получен без graph results.");
+      else setMemoryNotice("");
+      if (result.providerError) setComposerError("Provider не завершил финальный ответ; созданный тест сохранён и доступен.");
+      else if (result.toolErrors?.length) setComposerError(`Инструмент не выполнил действие: ${result.toolErrors[0].error}`);
     } catch (error) {
       setComposerError(error.message || "Не удалось получить ответ куратора.");
     } finally {
@@ -361,6 +488,7 @@ export default function App() {
       runtime={toolState.runtime}
       requestJson={requestJson}
       onSettingsSaved={applySettings}
+      onRuntimeUpdated={applyRuntime}
     />
   );
 
@@ -401,24 +529,29 @@ export default function App() {
   return (
     <>
       <main className="appShell chatMode">
-        <aside className={`chatSidebar ${sidebarOpen ? "open" : ""}`} aria-label="История диалогов">
-          <button className="sidebarHandle" type="button" aria-label="Открыть историю и разделы" aria-expanded={sidebarOpen} onMouseDown={(event) => event.preventDefault()} onClick={() => setSidebarOpen((current) => !current)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" /></svg>
-          </button>
+        <aside className={`chatSidebar ${sidebarOpen ? "open" : ""}`} aria-label={activeTab === "tests" ? "Навигация по тестам" : "История диалогов"}>
           <div className="sidebarHeader">
-            <button className="sidebarBrand" type="button" onClick={() => showTab("home")} aria-label="Вернуться на лендинг CodeLearnML">CodeLearnML</button>
-            <button className="newChatButton" type="button" onClick={startNewChat} disabled={sending} aria-label="Новый чат">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            <button className="sidebarHandle" type="button" aria-label={sidebarOpen ? "Свернуть боковую панель" : "Открыть боковую панель"} aria-expanded={sidebarOpen} onMouseDown={(event) => event.preventDefault()} onClick={() => setSidebarOpen((current) => !current)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" /></svg>
             </button>
+            <button className="sidebarBrand" type="button" onClick={() => showTab("home")} aria-label="Вернуться на лендинг CodeLearnML">CodeLearnML</button>
+            {activeTab === "chat" ? <button className="newChatButton" type="button" onClick={startNewChat} disabled={sending} aria-label="Новый чат">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            </button> : null}
           </div>
           <nav className="workspaceNav" aria-label="Рабочие разделы">
-            <button type="button" aria-current="page">Чаты</button>
+            <button type="button" aria-current={activeTab === "chat" ? "page" : undefined} onClick={() => showTab("chat")}>Чаты</button>
             <button type="button" disabled>Задачи <small>soon</small></button>
-            <button type="button" disabled>Тесты <small>soon</small></button>
+            <button type="button" aria-current={activeTab === "tests" ? "page" : undefined} onClick={() => showTab("tests")}>Тесты {tests.length ? <small>{tests.length}</small> : null}</button>
           </nav>
-        <nav className="chatHistory" aria-label="Сохранённые чаты">
-          <p className="sidebarLabel">Недавние</p>
-          {chatHistory.length ? chatHistory.map((chat) => (
+        <nav className={`chatHistory ${activeTab === "tests" ? "testHistory" : ""}`} aria-label={activeTab === "tests" ? "Сохранённые тесты" : "Сохранённые чаты"}>
+          <p className="sidebarLabel">{activeTab === "tests" ? "Мои тесты" : "Недавние"}</p>
+          {activeTab === "tests" ? tests.map((test) => (
+            <button type="button" key={test.id} aria-current={test.id === (selectedTestId || tests[0]?.id) ? "page" : undefined} onClick={() => openTest(test.id)}>
+              <strong>{test.topic}</strong>
+              <span>{test.level} · {test.questions.length} вопросов</span>
+            </button>
+          )) : chatHistory.length ? chatHistory.map((chat) => (
             <button
               type="button"
               key={chat.id}
@@ -429,15 +562,19 @@ export default function App() {
               {chat.label}
             </button>
           )) : <span className="historyEmpty">История появится после первого сообщения.</span>}
+          {activeTab === "tests" && !tests.length ? <span className="historyEmpty">Попросите куратора сформировать первый тест.</span> : null}
         </nav>
           <ProfileTrigger settings={settings} onClick={() => setProfileOpen(true)} />
         </aside>
 
-        <section className="chatSurface" aria-label="Куратор LLM">
+        <section className={`chatSurface ${activeTab === "tests" ? "testsMode" : ""}`} aria-label={activeTab === "tests" ? "Тесты" : "Куратор LLM"}>
           <div className={`curatorStatus ${providerReady && toolState.runtime?.ok !== false ? "ready" : ""}`} role="status">
-            <span aria-hidden="true" />{curatorStatus}
+            <span aria-hidden="true" />{activeTab === "tests" ? `${tests.length} сохранено` : curatorStatus}
           </div>
 
+        {activeTab === "tests" ? (
+          <QuizView tests={tests} selectedTestId={selectedTestId} requestJson={requestJson} onAttemptSaved={recordQuizAttempt} />
+        ) : <>
         <div className="chatThread" aria-live="polite" aria-busy={sending}>
           {toolState.loading ? (
             <div className="chatEmpty loading"><p>Поднимаю сохранённый контекст…</p></div>
@@ -453,9 +590,8 @@ export default function App() {
           ) : messages.map((message, index) => (
             <article className={`chatMessage ${message.role}`} key={message.createdAt || `${message.role}-${index}`}>
               <span className="messageAuthor">{message.role === "assistant" ? "Куратор" : message.role === "system" ? "Система" : "Вы"}</span>
-              {message.role === "assistant" ? (
-                <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.content) }} />
-              ) : <p>{message.content}</p>}
+              <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.content) }} />
+              {message.action?.type === "open_test" ? <button className="messageAction" type="button" onClick={() => openTest(message.action.targetId)}>{message.action.label}</button> : null}
             </article>
           ))}
           {sending ? (
@@ -472,6 +608,7 @@ export default function App() {
           <div className="composerRow">
             <img className="composerMascot" src={profileMascotFrameSrc(settings.mascotId, sending ? "thinking" : draft.trim() ? "typing" : "idle", frameIndex)} alt="" />
             <div className="composerColumn">
+              {memoryNotice ? <p className="memoryNotice" role="status">{memoryNotice}</p> : null}
               {composerError ? <p className="composerError" role="alert">{composerError}</p> : null}
               <form className="chatComposer composerGlass" onSubmit={sendMessage}>
                 <CanvasNeuralFlow />
@@ -494,6 +631,7 @@ export default function App() {
             </div>
           </div>
         </div>
+        </>}
         </section>
       </main>
       {profileOverlay}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -16,6 +16,8 @@ const tmp = await mkdtemp(join(tmpdir(), "codelearn-db-"));
 const dbPath = join(tmp, "app.sqlite");
 const envPath = join(tmp, ".env");
 const workspaceRoot = join(tmp, "workspace");
+const fakeBin = join(tmp, "bin");
+const dockerCallLog = join(tmp, "docker-call.log");
 let modelServer;
 let graphServer;
 let agentServer;
@@ -26,6 +28,10 @@ const agentCommands = [];
 const judgeSubmissions = [];
 
 try {
+  await mkdir(fakeBin, { recursive: true });
+  const fakeDocker = join(fakeBin, "docker");
+  await writeFile(fakeDocker, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_CALL_LOG\"\n", "utf8");
+  await chmod(fakeDocker, 0o700);
   modelServer = await startModelServer(modelPort);
   graphServer = await startGraphServer(graphPort, graphEvents, graphSearches);
   agentServer = await startAgentServer(agentPort, agentCommands);
@@ -577,6 +583,19 @@ try {
   assert.equal(graphHealth.configured, true);
   assert.equal(graphHealth.graph.service, "codelearn-graph-memory");
   assert.equal(graphHealth.graph.ready, true);
+  const graphItems = await fetchJson(`http://127.0.0.1:${port}/api/memory/graph-items`);
+  assert.equal(graphItems.ok, true);
+  assert.equal(graphItems.configured, true);
+  assert.deepEqual(graphItems.groups, [taskId]);
+  assert.deepEqual(graphItems.items[0], {
+    uuid: "memory-edge-1",
+    subject: "user",
+    relation: "struggles_with",
+    object: "missing value handling",
+    fact: "Путает порядок fillna и missing flag",
+    createdAt: "2026-07-03T10:00:00Z",
+    groupId: taskId
+  });
   await fetchJson(`http://127.0.0.1:${port}/api/settings`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -710,17 +729,15 @@ try {
   const chatTaskLog = await fetchJson(`http://127.0.0.1:${port}/api/tasks/${taskId}/log`);
   assert.deepEqual(chatTaskLog.messages.slice(-2).map((message) => message.content), ["Отдельный контекст чата", "Контекст сохранен отдельно"]);
   assert.equal(chatTaskLog.messages.at(-1).source, "assistant_chat");
-  await fetchJson(`http://127.0.0.1:${port}/api/assistant/chats/${chat.chat.id}/messages`, {
+  const explicitRememberMessage = await fetchJson(`http://127.0.0.1:${port}/api/assistant/chats/${chat.chat.id}/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ role: "user", content: "Запомни слабую тему: путаю reshape в pandas" })
   });
+  assert.equal(explicitRememberMessage.memory, undefined);
   chatState = await fetchJson(`http://127.0.0.1:${port}/api/app-state`);
   const assistantChatMemory = chatState.memoryReviewQueue.find((event) => event.source === "assistant_chat");
-  assert.equal(assistantChatMemory.kind, "weak_topic");
-  assert.equal(assistantChatMemory.text, "путаю reshape в pandas");
-  assert.equal(assistantChatMemory.evidence.chatId, chat.chat.id);
-  assert.equal(assistantChatMemory.evidence.taskId, taskId);
+  assert.equal(assistantChatMemory, undefined);
   const models = await fetchJson(`http://127.0.0.1:${port}/api/models`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -851,6 +868,11 @@ try {
       workspaceRuntimeUrl: `http://127.0.0.1:${agentPort}`,
       agentRuntimeUrl: `http://127.0.0.1:${agentPort}`,
       graphMemoryUrl: `http://127.0.0.1:${graphPort}`,
+      graphEmbeddingProvider: "openrouter",
+      graphEmbeddingBaseUrl: "https://openrouter.ai/api/v1",
+      graphEmbeddingModel: "openai/text-embedding-3-small",
+      graphEmbeddingDim: "1536",
+      graphApiKey: "graph-test-key",
       sandboxCpuTimeSec: "2",
       sandboxMemoryMb: "256",
       mascotAssistantSettings: JSON.stringify({ x: 22, y: 33, size: 144 })
@@ -863,9 +885,12 @@ try {
   assert.equal(settingsSave.providerStatus.openai.masked, "oa-t...enai");
   assert.equal(settingsSave.providerStatus.yandex.configured, true);
   assert.equal(settingsSave.providerStatus.yandex.folder.configured, true);
+  assert.equal(settingsSave.settings.graphEmbeddingProvider, "openrouter");
+  assert.equal(settingsSave.settings.graphEmbeddingDim, "1536");
   assert.doesNotMatch(JSON.stringify(settingsSave), /oa-test-openai/);
   assert.doesNotMatch(JSON.stringify(settingsSave), /sk-test-secret/);
   assert.doesNotMatch(JSON.stringify(settingsSave), /folder-secret-123/);
+  assert.doesNotMatch(JSON.stringify(settingsSave), /graph-test-key/);
   const savedEnv = await readFile(envPath, "utf8");
   const savedEnvMap = Object.fromEntries(savedEnv.trim().split("\n").map((line) => line.split("=", 2)));
   assert.equal(savedEnvMap.KEEP_ME, "1");
@@ -873,8 +898,51 @@ try {
   assert.equal(savedEnvMap.OPENROUTER_API_KEY, "sk-test-secret");
   assert.equal(savedEnvMap.YANDEX_AI_STUDIO_API_KEY, "sk-test-yandex");
   assert.equal(savedEnvMap.YANDEX_AI_STUDIO_FOLDER_ID, "folder-secret-123");
+  assert.equal(savedEnvMap.GRAPH_EMBEDDING_PROVIDER, "openrouter");
+  assert.equal(savedEnvMap.GRAPH_EMBEDDING_MODEL, "openai/text-embedding-3-small");
+  assert.equal(savedEnvMap.GRAPH_EMBEDDING_DIM, "1536");
+  assert.equal(savedEnvMap.GRAPHITI_LLM_PROVIDER, undefined);
+  assert.equal(savedEnvMap.GRAPH_OPENROUTER_API_KEY, "graph-test-key");
   assert.notEqual(savedEnvMap.OPENROUTER_API_KEY, "old-value");
   assert.equal((await stat(envPath)).mode & 0o777, 0o600);
+  const runtimeStart = await fetchJson(`http://127.0.0.1:${port}/api/runtime/start`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({})
+  });
+  assert.equal(runtimeStart.ok, true);
+  assert.deepEqual((await readFile(dockerCallLog, "utf8")).trim().split("\n"), [
+    "compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build",
+    "code-server", "openhands", "falkordb", "graph-memory"
+  ]);
+  const arbitraryRuntimeStart = await fetch(`http://127.0.0.1:${port}/api/runtime/start`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ services: ["untrusted-service"] })
+  });
+  assert.equal(arbitraryRuntimeStart.status, 400);
+  assert.equal((await arbitraryRuntimeStart.json()).error, "invalid_runtime_start_request");
+  const invalidGraphProvider = await fetch(`http://127.0.0.1:${port}/api/settings`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ graphEmbeddingProvider: "untrusted" })
+  });
+  assert.equal(invalidGraphProvider.status, 400);
+  assert.equal((await invalidGraphProvider.json()).error, "invalid_graph_embedding_provider");
+  const invalidGraphEmbeddingUrl = await fetch(`http://127.0.0.1:${port}/api/settings`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ graphEmbeddingBaseUrl: "file:///tmp/embedder" })
+  });
+  assert.equal(invalidGraphEmbeddingUrl.status, 400);
+  assert.equal((await invalidGraphEmbeddingUrl.json()).error, "invalid_graph_embedding_url");
+  const invalidGraphEmbeddingDim = await fetch(`http://127.0.0.1:${port}/api/settings`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ graphEmbeddingDim: 0 })
+  });
+  assert.equal(invalidGraphEmbeddingDim.status, 400);
+  assert.equal((await invalidGraphEmbeddingDim.json()).error, "invalid_graph_embedding_dim");
   const invalidProfileName = await fetch(`http://127.0.0.1:${port}/api/settings`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -1037,8 +1105,8 @@ try {
   assert.equal(state.settings.sandboxMemoryMb, "256");
   assert.equal(state.learningPipeline.scope, "project");
   assert.equal(state.learningPipeline.steps[0].title, "LLM теория");
-  assert.equal(state.memoryEvents.length, 6);
-  assert.equal(state.memoryReviewQueue.length, 4);
+  assert.equal(state.memoryEvents.length, 5);
+  assert.equal(state.memoryReviewQueue.length, 3);
   assert.ok(state.retrievedMemory.some((memory) => memory.kind === "weak_topic"));
   assert.ok(state.retrievedMemory.some((memory) => memory.text === graphFact));
   assert.equal(state.skillGraph[0].status, "weak");
@@ -1093,7 +1161,9 @@ async function startServer({ seed, dbPath, port }) {
       JUDGE0_BASE_URL: `http://127.0.0.1:${judgePort}`,
       OPENROUTER_API_KEY: "sk-test-secret",
       CODELEARN_SEED_DEV_DATA: seed,
-      PERSONALITY_PATH: join(tmp, "personality.md")
+      PERSONALITY_PATH: join(tmp, "personality.md"),
+      PATH: `${fakeBin}:${process.env.PATH || ""}`,
+      DOCKER_CALL_LOG: dockerCallLog
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -1124,6 +1194,25 @@ async function startGraphServer(port, receivedEvents, receivedSearches) {
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, service: "codelearn-graph-memory", ready: true }));
+      return;
+    }
+    if (req.method === "GET" && req.url.startsWith("/memory/items?")) {
+      const url = new URL(req.url, `http://127.0.0.1:${port}`);
+      const groupId = url.searchParams.get("groupId");
+      assert.equal(url.searchParams.get("limit"), "100");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        ok: true,
+        groupId,
+        items: [{
+          uuid: "memory-edge-1",
+          subject: "user",
+          relation: "struggles_with",
+          object: "missing value handling",
+          fact: "Путает порядок fillna и missing flag",
+          createdAt: "2026-07-03T10:00:00Z"
+        }]
+      }));
       return;
     }
     if (req.method === "GET" && req.url === "/missing-credentials/health") {

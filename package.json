@@ -7,6 +7,7 @@
     "test": "tests"
   },
   "scripts": {
+    "start": "npm run runtime:all && node server.mjs",
     "server": "node server.mjs",
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
@@ -14,9 +15,9 @@
     "runtime:workspace": "docker compose -f docker-compose.workspace.yml up code-server openhands",
     "runtime:project": "test -n \"$CODELEARN_PROJECT_ID\" && CODELEARN_WORKSPACE_MOUNT=\"${CODELEARN_WORKSPACE_ROOT:-./workspace}/$CODELEARN_PROJECT_ID\" CODELEARN_WORKSPACE_CONTAINER_PATH=\"/workspaces/$CODELEARN_PROJECT_ID\" docker compose -f docker-compose.workspace.yml up code-server openhands",
     "runtime:memory": "docker compose -f docker-compose.workspace.yml up falkordb graph-memory",
-    "runtime:all": "docker compose -f docker-compose.workspace.yml up code-server openhands falkordb graph-memory",
+    "runtime:all": "docker compose -f docker-compose.workspace.yml up -d --build code-server openhands falkordb graph-memory",
     "runtime:down": "docker compose -f docker-compose.workspace.yml down",
-    "test": "node tests/self-check.mjs && node tests/persistence-api-check.mjs && python3 tests/memory-service-check.py"
+    "test": "node tests/self-check.mjs && node tests/persistence-api-check.mjs && node tests/chat-tool-loop-check.mjs && python3 tests/memory-service-check.py"
   },
   "keywords": [],
   "author": "",

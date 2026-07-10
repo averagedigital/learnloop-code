@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { chmod, readFile, writeFile, mkdir, readdir, lstat, realpath } from "node:fs/promises";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { modelControlPrompt, providers, toolsForProvider } from "./src/platform.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const staticRoot = normalize(join(root, "dist"));
@@ -24,10 +26,29 @@ const providerEnv = {
 };
 const providerEnvNames = new Set(Object.values(providerEnv));
 const providerHeaderEnvNames = new Set(["YANDEX_AI_STUDIO_FOLDER_ID"]);
+const graphProviderEnv = {
+  openai: "GRAPH_OPENAI_API_KEY",
+  openrouter: "GRAPH_OPENROUTER_API_KEY",
+  yandex: "GRAPH_YANDEX_AI_STUDIO_API_KEY"
+};
+const graphSettingEnv = {
+  graphEmbeddingProvider: "GRAPH_EMBEDDING_PROVIDER",
+  graphEmbeddingBaseUrl: "GRAPH_EMBEDDING_BASE_URL",
+  graphEmbeddingModel: "GRAPH_EMBEDDING_MODEL",
+  graphEmbeddingDim: "GRAPH_EMBEDDING_DIM"
+};
+const runtimeComposeArgs = ["compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build", "code-server", "openhands", "falkordb", "graph-memory"];
 const mascotIds = new Set(["organic_spiky_concept", "05_laptop_spiky"]);
-const memoryEventKinds = new Set(["coding_habit", "weak_topic", "strong_topic", "response_preference", "project_reference"]);
+const memoryEventKinds = new Set(["coding_habit", "weak_topic", "strong_topic", "skill_observation", "response_preference", "project_reference"]);
+const autonomousMemoryKinds = {
+  preference: "response_preference",
+  skill: "skill_observation",
+  project: "project_reference",
+  habit: "coding_habit"
+};
 const memoryEventSources = new Set(["manual", "task_run", "assistant_chat", "progress_pipeline", "studio_import"]);
 let db;
+let runtimeStartInProgress = false;
 
 class InvalidJsonError extends Error {
   constructor() {
@@ -54,12 +75,18 @@ createServer(async (req, res) => {
     if (req.method === "PATCH" && url.pathname.startsWith("/api/memory/events/")) return await memoryEventReview(req, res, url);
     if (url.pathname === "/api/memory/events") return await memoryEvents(req, res);
     if (req.method === "GET" && url.pathname === "/api/memory/graph-health") return await graphMemoryHealth(req, res);
+    if (req.method === "GET" && url.pathname === "/api/memory/graph-items") return await graphMemoryItems(req, res);
     if (req.method === "POST" && url.pathname === "/api/memory/graph-sync") return await graphMemorySync(req, res);
     if (req.method === "POST" && url.pathname === "/api/memory/graph-search") return await graphMemorySearch(req, res);
     if (url.pathname === "/api/assistant/chats") return await assistantChats(req, res);
     if (req.method === "POST" && url.pathname.startsWith("/api/assistant/chats/") && url.pathname.endsWith("/messages")) return await assistantChatMessage(req, res, url);
+    if (req.method === "POST" && url.pathname === "/api/assistant/respond") return await assistantRespond(req, res);
+    if (req.method === "GET" && url.pathname === "/api/tests") return await quizTests(req, res);
+    if (req.method === "POST" && url.pathname.startsWith("/api/tests/") && url.pathname.endsWith("/attempts")) return await quizAttempt(req, res, url);
+    if (req.method === "GET" && url.pathname.startsWith("/api/tests/")) return await quizTest(req, res, url);
     if (req.method === "PATCH" && url.pathname === "/api/settings") return await appSettings(req, res);
     if (req.method === "GET" && url.pathname === "/api/runtime/health") return await runtimeHealth(req, res);
+    if (req.method === "POST" && url.pathname === "/api/runtime/start") return await runtimeStart(req, res);
     if (req.method === "POST" && url.pathname === "/api/execute") return await executeCode(req, res);
     if (req.method === "POST" && url.pathname === "/api/models") return await listModels(req, res);
     if (req.method === "POST" && url.pathname === "/api/responses") return await proxyAi(req, res);
@@ -187,6 +214,30 @@ async function initDatabase() {
       chat_id TEXT NOT NULL REFERENCES assistant_chats(id) ON DELETE CASCADE,
       role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
       content TEXT NOT NULL,
+      action TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS quiz_tests (
+      id TEXT PRIMARY KEY,
+      topic TEXT NOT NULL,
+      level TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS quiz_questions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      test_id TEXT NOT NULL REFERENCES quiz_tests(id) ON DELETE CASCADE,
+      prompt TEXT NOT NULL,
+      options TEXT NOT NULL,
+      correct_answer INTEGER NOT NULL CHECK (correct_answer >= 0),
+      explanation TEXT NOT NULL,
+      position INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS quiz_attempts (
+      id TEXT PRIMARY KEY,
+      test_id TEXT NOT NULL REFERENCES quiz_tests(id) ON DELETE CASCADE,
+      answers TEXT NOT NULL,
+      correct_count INTEGER NOT NULL CHECK (correct_count >= 0),
+      total_count INTEGER NOT NULL CHECK (total_count >= 4 AND total_count <= 15),
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS settings (
@@ -194,6 +245,9 @@ async function initDatabase() {
       value TEXT NOT NULL
     );
   `);
+  if (!db.prepare("PRAGMA table_info(assistant_messages)").all().some((column) => column.name === "action")) {
+    db.exec("ALTER TABLE assistant_messages ADD COLUMN action TEXT NOT NULL DEFAULT ''");
+  }
 
   if (process.env.CODELEARN_SEED_DEV_DATA === "true" && scalar("SELECT COUNT(*) FROM lessons") === 0) {
     seedDevData();
@@ -264,7 +318,7 @@ async function importLesson(req, res) {
       }
     });
     const memoryCandidate = memoryCandidateFromSessionImport(lessonId, spec, taskIds, sourcePrompt, llmAnswer);
-    if (memoryCandidate) {
+    if (memoryCandidate && !containsSensitiveData(memoryCandidate.text)) {
       insertMemoryEvent.run(crypto.randomUUID(), memoryCandidate.kind, memoryCandidate.text, "studio_import", JSON.stringify(memoryCandidate.evidence), "pending", now);
     }
     db.exec("COMMIT");
@@ -359,6 +413,7 @@ async function appState(_req, res) {
     retrievedMemory: readRetrievedMemory(),
     skillGraph: readSkillGraph(),
     assistantChats: readAssistantChats(),
+    quizAttempts: readQuizAttempts(),
     learningPipeline: readLearningPipeline(),
     providerStatus: readProviderStatus(),
     settings: readSettings()
@@ -395,6 +450,7 @@ async function appSettings(req, res) {
     "workspaceRuntimeUrl",
     "agentRuntimeUrl",
     "graphMemoryUrl",
+    ...Object.keys(graphSettingEnv),
     "sandboxCpuTimeSec",
     "sandboxMemoryMb"
   ]);
@@ -410,6 +466,12 @@ async function appSettings(req, res) {
   if (body.workspaceRuntimeUrl !== undefined && String(body.workspaceRuntimeUrl).trim() && !httpServiceUrl(body.workspaceRuntimeUrl)) return sendJson(res, 400, { error: "invalid_workspace_runtime_url" });
   if (body.agentRuntimeUrl !== undefined && String(body.agentRuntimeUrl).trim() && !httpServiceUrl(body.agentRuntimeUrl)) return sendJson(res, 400, { error: "invalid_agent_runtime_url" });
   if (body.graphMemoryUrl !== undefined && String(body.graphMemoryUrl).trim() && !httpServiceUrl(body.graphMemoryUrl)) return sendJson(res, 400, { error: "invalid_graph_memory_url" });
+  if (body.graphEmbeddingProvider !== undefined && !["auto", ...Object.keys(graphProviderEnv)].includes(String(body.graphEmbeddingProvider))) return sendJson(res, 400, { error: "invalid_graph_embedding_provider" });
+  if (body.graphEmbeddingBaseUrl !== undefined && String(body.graphEmbeddingBaseUrl).trim() && !httpServiceUrl(body.graphEmbeddingBaseUrl)) return sendJson(res, 400, { error: "invalid_graph_embedding_url" });
+  for (const key of ["graphEmbeddingModel"]) {
+    if (body[key] !== undefined && !validGraphTextSetting(body[key])) return sendJson(res, 400, { error: `invalid_${key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`)}` });
+  }
+  if (body.graphEmbeddingDim !== undefined && !boundedIntegerSetting(body.graphEmbeddingDim, 1, 8192)) return sendJson(res, 400, { error: "invalid_graph_embedding_dim" });
   if (body.sandboxCpuTimeSec !== undefined && !positiveSetting(body.sandboxCpuTimeSec, 1)) return sendJson(res, 400, { error: "invalid_sandbox_cpu_time" });
   if (body.sandboxMemoryMb !== undefined && !positiveSetting(body.sandboxMemoryMb, 64)) return sendJson(res, 400, { error: "invalid_sandbox_memory" });
   if (body.providerApiKeys !== undefined && (!body.providerApiKeys || typeof body.providerApiKeys !== "object" || Array.isArray(body.providerApiKeys))) return sendJson(res, 400, { error: "invalid_provider_api_keys" });
@@ -420,6 +482,10 @@ async function appSettings(req, res) {
     }
   }
   if (body.yandexFolderId !== undefined && !validSecretInput(body.yandexFolderId)) return sendJson(res, 400, { error: "invalid_secret_value" });
+  if (body.graphApiKey !== undefined && !validSecretInput(body.graphApiKey)) return sendJson(res, 400, { error: "invalid_secret_value" });
+  if (body.graphYandexFolderId !== undefined && !validSecretInput(body.graphYandexFolderId)) return sendJson(res, 400, { error: "invalid_secret_value" });
+  const effectiveGraphProvider = String(body.graphEmbeddingProvider || readSetting("graphEmbeddingProvider") || readSetting("graphProvider") || process.env.GRAPH_EMBEDDING_PROVIDER || process.env.GRAPHITI_LLM_PROVIDER || "openrouter");
+  if (String(body.graphApiKey || "").trim() && !graphProviderEnv[effectiveGraphProvider]) return sendJson(res, 400, { error: "graph_provider_required_for_key" });
   const yandexFolderId = String(body.yandexFolderId || "").trim();
   const updated = {};
   const stmt = db.prepare(`INSERT INTO settings (key, value) VALUES (?, ?)
@@ -437,7 +503,18 @@ async function appSettings(req, res) {
     }
   }
   if (yandexFolderId) await writeEnvValue("YANDEX_AI_STUDIO_FOLDER_ID", yandexFolderId);
+  for (const [key, envName] of Object.entries(graphSettingEnv)) {
+    if (body[key] !== undefined) await writeEnvValue(envName, String(body[key]).trim());
+  }
+  const graphApiKey = String(body.graphApiKey || "").trim();
+  if (graphApiKey) await writeEnvValue(graphProviderEnv[effectiveGraphProvider], graphApiKey);
+  const graphYandexFolderId = String(body.graphYandexFolderId || "").trim();
+  if (graphYandexFolderId) await writeEnvValue("GRAPH_YANDEX_AI_STUDIO_FOLDER_ID", graphYandexFolderId);
   sendJson(res, 200, { ok: true, settings: updated, providerStatus: readProviderStatus() });
+}
+
+function validGraphTextSetting(value) {
+  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 300 && !hasLineBreak(value);
 }
 
 function validMascotSettings(value) {
@@ -626,9 +703,11 @@ function memoryCandidateFromRun(taskId, runId, status, finalResult) {
   const value = `${status} ${finalResult}`.toLowerCase();
   if (!/(fail|error|ошиб|провал)/.test(value)) return null;
   const task = db.prepare("SELECT title, topic FROM tasks WHERE id = ?").get(taskId);
+  const text = `${task?.title || taskId}: ${finalResult || status}`;
+  if (containsSensitiveData(text)) return null;
   return {
     kind: "weak_topic",
-    text: `${task?.title || taskId}: ${finalResult || status}`,
+    text,
     evidence: { taskId, runId, status, finalResult, topic: task?.topic || "" }
   };
 }
@@ -656,8 +735,10 @@ async function progressPipeline(req, res) {
     ON CONFLICT(id) DO UPDATE SET scope = excluded.scope, steps = excluded.steps, updated_at = excluded.updated_at`)
     .run(id, scope, JSON.stringify(steps), now, now);
   const memoryCandidate = memoryCandidateFromPipeline(scope, steps);
-  db.prepare("INSERT INTO memory_events (id, kind, text, source, evidence, review_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(crypto.randomUUID(), memoryCandidate.kind, memoryCandidate.text, "progress_pipeline", JSON.stringify(memoryCandidate.evidence), "pending", now);
+  if (!containsSensitiveData(memoryCandidate.text)) {
+    db.prepare("INSERT INTO memory_events (id, kind, text, source, evidence, review_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(crypto.randomUUID(), memoryCandidate.kind, memoryCandidate.text, "progress_pipeline", JSON.stringify(memoryCandidate.evidence), "pending", now);
+  }
   sendJson(res, 200, { ok: true, pipeline: readLearningPipeline() });
 }
 
@@ -696,6 +777,7 @@ async function memoryEvents(req, res) {
   if (!kind || !text) return sendJson(res, 400, { error: "invalid_memory_event" });
   if (!memoryEventKinds.has(kind)) return sendJson(res, 400, { error: "invalid_memory_event_kind" });
   if (!memoryEventSources.has(source)) return sendJson(res, 400, { error: "invalid_memory_event_source" });
+  if (containsSensitiveData(text)) return sendJson(res, 400, { error: "sensitive_memory_data" });
   if (body.evidence !== undefined && (!body.evidence || typeof body.evidence !== "object" || Array.isArray(body.evidence))) {
     return sendJson(res, 400, { error: "invalid_memory_event_evidence" });
   }
@@ -762,7 +844,7 @@ function readUnsyncedAcceptedMemoryEvents() {
     LEFT JOIN graph_synced_memory_events s ON s.event_id = e.id
     WHERE e.review_status = 'accepted' AND s.event_id IS NULL
     ORDER BY e.created_at DESC
-  `).all().map((row) => ({ ...row, evidence: parseJson(row.evidence) }));
+  `).all().map((row) => ({ ...row, evidence: parseJson(row.evidence) })).filter((event) => !containsSensitiveData(event.text));
 }
 
 function markGraphSyncedMemoryEvents(events) {
@@ -782,6 +864,52 @@ async function graphMemoryHealth(_req, res) {
   } catch (error) {
     return sendJson(res, 502, { ok: false, configured: true, error: graphMemoryError(error), message: error.message });
   }
+}
+
+async function graphMemoryItems(_req, res) {
+  const configured = graphMemoryBaseUrl();
+  if (!configured) return sendJson(res, 200, { ok: false, configured: false, error: "missing_graph_memory_url", groups: [], items: [] });
+  const graphUrl = httpServiceUrl(configured);
+  if (!graphUrl) return sendJson(res, 400, { ok: false, configured: true, error: "invalid_graph_memory_url", groups: [], items: [] });
+  const groups = graphMemoryGroups();
+  try {
+    const items = [];
+    for (const groupId of groups) {
+      const graph = await fetchJson(`${graphUrl}/memory/items?groupId=${encodeURIComponent(groupId)}&limit=100`);
+      for (const item of Array.isArray(graph.items) ? graph.items : []) {
+        const safe = graphMemoryItemForUi(item, groupId);
+        if (safe) items.push(safe);
+      }
+    }
+    sendJson(res, 200, { ok: true, configured: true, groups, items });
+  } catch (error) {
+    sendJson(res, 502, { ok: false, configured: true, error: graphMemoryError(error), message: error.message, groups, items: [] });
+  }
+}
+
+function graphMemoryGroups() {
+  const groups = readMemoryEvents("accepted").map((event) => {
+    const evidence = event.evidence || {};
+    return String(evidence.projectId || evidence.lessonId || evidence.taskId || "codelearn-local");
+  });
+  return groups.length ? [...new Set(groups)] : ["codelearn-local"];
+}
+
+function graphMemoryItemForUi(item, groupId) {
+  const fact = String(item?.fact || "").trim();
+  const subject = String(item?.subject || "").trim();
+  const relation = String(item?.relation || "").trim();
+  const object = String(item?.object || "").trim();
+  if (!fact || containsSensitiveData([fact, subject, relation, object].join("\n"))) return null;
+  return {
+    uuid: String(item?.uuid || "").slice(0, 200),
+    subject: subject.slice(0, 200),
+    relation: relation.slice(0, 120),
+    object: object.slice(0, 500),
+    fact: fact.slice(0, 1000),
+    createdAt: String(item?.createdAt || "").slice(0, 100),
+    groupId
+  };
 }
 
 async function graphMemorySearch(req, res) {
@@ -828,16 +956,15 @@ function dedupeGraphResults(results) {
   });
 }
 
-function cacheRetrievedGraphMemory(query, groupId, results) {
+function cacheRetrievedGraphMemory(_query, groupId, results) {
   if (!Array.isArray(results)) return;
   const now = new Date().toISOString();
   const exists = db.prepare("SELECT 1 FROM retrieved_memory WHERE text = ? AND source = ? AND evidence = ?");
   const insert = db.prepare("INSERT INTO retrieved_memory (id, kind, text, source, evidence, created_at) VALUES (?, ?, ?, ?, ?, ?)");
   for (const result of results.slice(0, 8)) {
     const text = String(result?.fact || result?.name || "").trim();
-    if (!text || text.length > 5000) continue;
+    if (!text || text.length > 5000 || containsSensitiveData(text)) continue;
     const evidence = JSON.stringify({
-      query,
       groupId,
       uuid: String(result?.uuid || ""),
       validAt: String(result?.validAt || ""),
@@ -860,8 +987,12 @@ function boundedLimit(value, fallback = 8, max = 50) {
 }
 
 async function runtimeHealth(_req, res) {
-  const workspaceUrl = readSetting("workspaceRuntimeUrl") || process.env.WORKSPACE_RUNTIME_URL || "";
-  const agentUrl = readSetting("agentRuntimeUrl") || process.env.AGENT_RUNTIME_URL || "";
+  sendJson(res, 200, await readRuntimeHealth());
+}
+
+async function readRuntimeHealth() {
+  const workspaceUrl = readSetting("workspaceRuntimeUrl") || process.env.WORKSPACE_RUNTIME_URL || "http://127.0.0.1:8080";
+  const agentUrl = readSetting("agentRuntimeUrl") || process.env.AGENT_RUNTIME_URL || "http://127.0.0.1:3000";
   const judgeUrl = process.env.JUDGE0_BASE_URL || "";
   const graphUrl = graphMemoryBaseUrl();
   const [workspace, agent, judge, graph] = await Promise.all([
@@ -870,7 +1001,36 @@ async function runtimeHealth(_req, res) {
     runtimeProbe("judge0", judgeUrl, ""),
     runtimeProbe("graphMemory", graphUrl, "/health")
   ]);
-  sendJson(res, 200, { ok: [workspace, agent, judge, graph].every((item) => !item.configured || item.ok), workspace, agent, judge, graph });
+  return { ok: [workspace, agent, judge, graph].every((item) => !item.configured || item.ok), workspace, agent, judge, graph };
+}
+
+async function runtimeStart(req, res) {
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length > 0) return sendJson(res, 400, { error: "invalid_runtime_start_request" });
+  if (runtimeStartInProgress) return sendJson(res, 409, { error: "runtime_start_in_progress" });
+  runtimeStartInProgress = true;
+  try {
+    await runRuntimeCompose();
+    return sendJson(res, 200, { ok: true, runtime: await readRuntimeHealth() });
+  } catch (error) {
+    return sendJson(res, 502, { error: "runtime_start_failed", message: String(error.message || "").slice(-500) });
+  } finally {
+    runtimeStartInProgress = false;
+  }
+}
+
+function runRuntimeCompose() {
+  return new Promise((resolve, reject) => {
+    const child = spawn("docker", runtimeComposeArgs, { cwd: root, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    const collect = (chunk) => {
+      output = `${output}${chunk}`.slice(-20000);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolve() : reject(new Error(output.trim() || `docker_compose_exit_${code}`)));
+  });
 }
 
 function graphMemoryBaseUrl() {
@@ -926,31 +1086,479 @@ async function assistantChatMessage(req, res, url) {
   db.prepare("INSERT INTO assistant_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)")
     .run(chatId, role, content, now);
   db.prepare("UPDATE assistant_chats SET updated_at = ? WHERE id = ?").run(now, chatId);
-  const memoryCandidate = memoryCandidateFromChatMessage(chatId, role, content);
-  if (memoryCandidate) {
-    db.prepare("INSERT INTO memory_events (id, kind, text, source, evidence, review_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(crypto.randomUUID(), memoryCandidate.kind, memoryCandidate.text, "assistant_chat", JSON.stringify(memoryCandidate.evidence), "pending", now);
-  }
-  sendJson(res, 200, { ok: true, message: { role, content, createdAt: now } });
+  sendJson(res, 200, {
+    ok: true,
+    message: { role, content, createdAt: now }
+  });
 }
 
-function memoryCandidateFromChatMessage(chatId, role, content) {
-  if (role !== "user") return null;
-  const match = content.match(/^запомни\s+(слабую тему|сильную сторону|привычку|предпочтение|проект):\s*(.+)$/i);
-  if (!match) return null;
-  const kindByLabel = {
-    "слабую тему": "weak_topic",
-    "сильную сторону": "strong_topic",
-    "привычку": "coding_habit",
-    "предпочтение": "response_preference",
-    "проект": "project_reference"
-  };
-  const chat = db.prepare("SELECT project_id AS projectId, task_id AS taskId FROM assistant_chats WHERE id = ?").get(chatId);
+async function assistantRespond(req, res) {
+  const { chatId } = await readJson(req);
+  const chat = db.prepare("SELECT id, project_id AS projectId, task_id AS taskId FROM assistant_chats WHERE id = ?").get(String(chatId || ""));
+  if (!chat) return sendJson(res, 404, { error: "chat_not_found" });
+  const history = boundedChatMessages(chat.id);
+  const latestUser = [...history].reverse().find((message) => message.role === "user");
+  if (!latestUser) return sendJson(res, 400, { error: "missing_user_message" });
+
+  const providerId = readSetting("providerId") || "openrouter";
+  const provider = providers.find((item) => item.id === providerId);
+  const model = readSetting("providerModel").trim();
+  const baseUrl = httpServiceUrl(readSetting("providerBaseUrl") || provider?.baseUrl);
+  const apiKey = provider ? process.env[provider.apiKeyEnv] : "";
+  if (!provider || !model || !baseUrl || !apiKey) return sendJson(res, 400, { error: "provider_not_configured" });
+
+  const memory = await assistantMemoryContext(latestUser.content, chat);
+  const instructions = assistantInstructions(memory);
+  const tools = toolsForProvider(provider.mode);
+  let initial;
+  try {
+    initial = await requestProvider(provider, baseUrl, apiKey, {
+      model,
+      instructions,
+      history,
+      tools
+    });
+  } catch (error) {
+    return sendJson(res, 502, { error: "provider_request_failed", message: error.message, memory: memory.status });
+  }
+
+  const calls = providerToolCalls(provider.mode, initial.data);
+  let finalData = initial.data;
+  const outputs = [];
+  let successfulTest = null;
+  let memoryWrites = [];
+  let action = null;
+  if (calls.length) {
+    const seenTools = new Set();
+    for (const [index, call] of calls.entries()) {
+      if (index >= 3) outputs.push({ ok: false, error: "too_many_tool_calls" });
+      else if (seenTools.has(call.name)) outputs.push({ ok: false, error: "duplicate_tool_call" });
+      else {
+        seenTools.add(call.name);
+        outputs.push(await executeAssistantTool(call, chat));
+      }
+    }
+    successfulTest = outputs.find((output) => output.ok && output.test) || null;
+    memoryWrites = outputs.filter((output) => output.ok && output.memory);
+    action = successfulTest ? { type: "open_test", targetId: successfulTest.test.id, label: "Открыть в тестах" } : null;
+    try {
+      finalData = await continueProvider(provider, baseUrl, apiKey, {
+        model,
+        instructions,
+        history,
+        tools,
+        initial: initial.data,
+        calls,
+        outputs
+      });
+    } catch (error) {
+      if (successfulTest || memoryWrites.length) {
+        const content = successfulTest
+          ? "Тест сохранён, но provider не вернул финальный ответ. Откройте тест или повторите запрос для текстового ответа."
+          : "Graph Memory обновлена, но provider не вернул финальный текстовый ответ.";
+        const message = persistAssistantMessage(chat.id, "system", content, action);
+        return sendJson(res, 200, {
+          ok: false,
+          providerError: "provider_request_failed",
+          message,
+          action,
+          test: successfulTest?.test || null,
+          memoryWrites,
+          toolErrors: outputs.filter((output) => !output.ok),
+          memory: memory.status
+        });
+      }
+      return sendJson(res, 502, { error: "provider_request_failed", message: error.message, memory: memory.status });
+    }
+  }
+
+  const content = successfulTest ? testCreatedChatMessage(successfulTest.test) : assistantResponseText(finalData).trim();
+  if (!content) return sendJson(res, 502, { error: "empty_provider_response", memory: memory.status });
+  const message = persistAssistantMessage(chat.id, "assistant", content, action);
+  sendJson(res, 200, {
+    ok: true,
+    message,
+    action,
+    test: successfulTest?.test || null,
+    memoryWrites,
+    toolErrors: outputs.filter((output) => !output.ok),
+    memory: memory.status
+  });
+}
+
+function persistAssistantMessage(chatId, role, content, action) {
+  const createdAt = new Date().toISOString();
+  db.prepare("INSERT INTO assistant_messages (chat_id, role, content, action, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run(chatId, role, content, action ? JSON.stringify(action) : "", createdAt);
+  db.prepare("UPDATE assistant_chats SET updated_at = ? WHERE id = ?").run(createdAt, chatId);
+  return { role, content, action, createdAt };
+}
+
+function boundedChatMessages(chatId) {
+  const rows = db.prepare("SELECT role, content FROM assistant_messages WHERE chat_id = ? AND role IN ('user', 'assistant') ORDER BY id DESC LIMIT 30").all(chatId);
+  const messages = [];
+  let length = 0;
+  for (const message of rows) {
+    if (length + message.content.length > 24000 && messages.length) break;
+    messages.push({ role: message.role, content: message.content.slice(0, 12000) });
+    length += message.content.length;
+  }
+  return messages.reverse();
+}
+
+async function assistantMemoryContext(query, chat) {
+  const personality = relevantPersonality(await readPersonality(), query);
+  const accepted = relevantAcceptedMemory(query);
+  const graph = await retrieveGraphContext(query, chat);
   return {
-    kind: kindByLabel[match[1].toLowerCase()],
-    text: match[2].trim(),
-    evidence: { chatId, projectId: chat?.projectId || "local", taskId: chat?.taskId || "" }
+    personality,
+    preferences: accepted.filter((item) => ["coding_habit", "response_preference"].includes(item.kind)).map((item) => item.text),
+    skills: accepted.filter((item) => ["weak_topic", "strong_topic", "skill_observation"].includes(item.kind)).map((item) => `${item.kind}: ${item.text}`),
+    graph: graph.results,
+    status: { graph: graph.status }
   };
+}
+
+function relevantPersonality(markdown, query) {
+  const sections = { "Кодовые привычки": [], "Проблемные темы/места": [], "Сильные стороны": [], "Предпочтения в ответах": [] };
+  let section = "";
+  for (const raw of String(markdown || "").split("\n")) {
+    const heading = raw.match(/^#\s+(.+)$/)?.[1]?.trim();
+    if (heading) {
+      section = Object.hasOwn(sections, heading) ? heading : "";
+      continue;
+    }
+    const line = raw.replace(/^[-*]\s+/, "").trim();
+    if (!section || !line || line.length > 500 || containsSensitiveData(line)) continue;
+    if (section === "Предпочтения в ответах" || relevantText(line, query)) sections[section].push(line.slice(0, 300));
+  }
+  return Object.entries(sections).flatMap(([name, lines]) => lines.slice(0, 3).map((line) => `${name}: ${line}`)).slice(0, 8);
+}
+
+function relevantAcceptedMemory(query) {
+  return readMemoryEvents("accepted")
+    .filter((item) => !containsSensitiveData(item.text))
+    .filter((item) => ["coding_habit", "response_preference"].includes(item.kind) || relevantText(item.text, query))
+    .slice(0, 8);
+}
+
+function relevantText(text, query) {
+  const terms = new Set(String(query || "").toLowerCase().match(/[a-zа-яё0-9_+-]{3,}/gi) || []);
+  return (String(text || "").toLowerCase().match(/[a-zа-яё0-9_+-]{3,}/gi) || []).some((term) => terms.has(term));
+}
+
+async function retrieveGraphContext(query, chat) {
+  const configured = graphMemoryBaseUrl();
+  if (!configured) return { status: { configured: false, ok: false, error: "missing_graph_memory_url" }, results: [] };
+  const graphUrl = httpServiceUrl(configured);
+  if (!graphUrl) return { status: { configured: true, ok: false, error: "invalid_graph_memory_url" }, results: [] };
+  if (containsSensitiveData(query)) return { status: { configured: true, ok: false, error: "sensitive_memory_query" }, results: [] };
+  try {
+    const results = [];
+    for (const groupId of graphSearchGroups(chat.taskId, chat.projectId)) {
+      const graph = await fetchJson(`${graphUrl}/memory/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: String(query).slice(0, 1000), groupId, limit: 4 })
+      });
+      cacheRetrievedGraphMemory(query, groupId, graph.results);
+      results.push(...(graph.results || []));
+    }
+    return {
+      status: { configured: true, ok: true },
+      results: dedupeGraphResults(results).map((item) => String(item.fact || item.name || "").trim()).filter((text) => text && !containsSensitiveData(text)).slice(0, 4)
+    };
+  } catch (error) {
+    return { status: { configured: true, ok: false, error: graphMemoryError(error), message: error.message }, results: [] };
+  }
+}
+
+function assistantInstructions(memory) {
+  const section = (title, items) => [`# ${title}`, ...(items.length ? items.map((item) => `- ${item}`) : ["- нет релевантных подтверждённых данных"])].join("\n");
+  const graphState = memory.status.graph.ok
+    ? "Graph memory доступна; ниже только результаты текущего поиска."
+    : `Graph memory недоступна: ${memory.status.graph.error}. Не выдумывай graph results.`;
+  return [
+    modelControlPrompt,
+    "",
+    "Контекст памяти ограничен текущим запросом. Не цитируй его как скрытый профиль и не сохраняй новые данные без исполняемого tool.",
+    section("Устойчивые предпочтения", [...memory.personality, ...memory.preferences].slice(0, 8)),
+    section("Наблюдения о навыках", memory.skills.slice(0, 6)),
+    `# Graph memory\n${graphState}`,
+    ...memory.graph.map((item) => `- ${item}`)
+  ].join("\n").slice(0, 7000);
+}
+
+async function requestProvider(provider, baseUrl, apiKey, { model, instructions, history, tools }) {
+  const headers = { authorization: `Bearer ${apiKey}`, "content-type": "application/json", ...headersFromEnv(provider.envHeaders) };
+  if (provider.mode === "openai-responses") {
+    const body = { model, instructions, input: history, tools, parallel_tool_calls: false };
+    return { data: await fetchJson(`${baseUrl}/responses`, { method: "POST", headers, body: JSON.stringify(body) }), body };
+  }
+  const body = { model, messages: [{ role: "system", content: instructions }, ...history], tools, parallel_tool_calls: false };
+  return { data: await fetchJson(`${baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body) }), body };
+}
+
+function providerToolCalls(mode, data) {
+  if (mode === "openai-responses") {
+    return (data?.output || []).filter((item) => item?.type === "function_call").map((item) => ({ id: item.call_id, name: item.name, arguments: item.arguments }));
+  }
+  return (data?.choices?.[0]?.message?.tool_calls || []).map((item) => ({ id: item.id, name: item.function?.name, arguments: item.function?.arguments }));
+}
+
+async function continueProvider(provider, baseUrl, apiKey, { model, instructions, history, tools, initial, calls, outputs }) {
+  const headers = { authorization: `Bearer ${apiKey}`, "content-type": "application/json", ...headersFromEnv(provider.envHeaders) };
+  if (provider.mode === "openai-responses") {
+    return fetchJson(`${baseUrl}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model,
+        instructions,
+        input: [
+          ...history,
+          ...(Array.isArray(initial?.output) ? initial.output : []),
+          ...calls.map((call, index) => ({ type: "function_call_output", call_id: call.id, output: JSON.stringify(providerToolOutput(outputs[index])) }))
+        ],
+        tools,
+        parallel_tool_calls: false
+      })
+    });
+  }
+  const assistant = initial?.choices?.[0]?.message || {};
+  return fetchJson(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: instructions },
+        ...history,
+        { role: "assistant", content: assistant.content || null, tool_calls: assistant.tool_calls || [] },
+        ...calls.map((call, index) => ({ role: "tool", tool_call_id: call.id, content: JSON.stringify(providerToolOutput(outputs[index])) }))
+      ],
+      tools,
+      parallel_tool_calls: false
+    })
+  });
+}
+
+function providerToolOutput(output) {
+  if (!output?.ok) return output;
+  if (output.memory) {
+    return {
+      ok: true,
+      memory: {
+        storedCount: output.memory.storedCount,
+        categories: output.memory.categories,
+        reviewStatus: "accepted"
+      },
+      graph: { ok: true, synced: output.graph.synced }
+    };
+  }
+  return {
+    ok: true,
+    test: {
+      id: output.test.id,
+      topic: output.test.topic,
+      level: output.test.level,
+      questionCount: output.test.questions.length
+    },
+    action: { type: "open_test", targetId: output.test.id }
+  };
+}
+
+function testCreatedChatMessage(test) {
+  if (!test) return "Тест создан и сохранён во вкладке «Тесты».";
+  return `Тест «${test.topic}» создан: ${test.questions.length} вопросов. Он сохранён во вкладке «Тесты».`;
+}
+
+async function executeAssistantTool(call, chat) {
+  if (!["create_test", "remember_context"].includes(call.name)) return { ok: false, error: "tool_not_allowed" };
+  let spec;
+  try {
+    spec = JSON.parse(String(call.arguments || ""));
+  } catch {
+    return { ok: false, error: "invalid_tool_arguments_json" };
+  }
+  if (call.name === "create_test") {
+    const error = validateQuizSpec(spec);
+    if (error) return { ok: false, error };
+    return { ok: true, test: saveQuiz(spec) };
+  }
+  return saveAutonomousMemory(spec, chat);
+}
+
+async function saveAutonomousMemory(spec, chat) {
+  const error = validateAutonomousMemory(spec);
+  if (error) return { ok: false, error };
+  const now = new Date().toISOString();
+  const evidence = {
+    chatId: chat.id,
+    projectId: chat.projectId || "local",
+    taskId: chat.taskId || "",
+    assistantGenerated: true
+  };
+  const inserted = [];
+  const statement = db.prepare("INSERT INTO memory_events (id, kind, text, source, evidence, review_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  db.exec("BEGIN");
+  try {
+    for (const memory of spec.memories) {
+      const event = {
+        id: crypto.randomUUID(),
+        kind: autonomousMemoryKinds[memory.category],
+        text: memory.text.trim(),
+        source: "assistant_chat",
+        evidence: {
+          ...evidence,
+          graph: {
+            subject: memory.subject.trim(),
+            relation: memory.relation.trim(),
+            object: memory.object.trim()
+          }
+        },
+        reviewStatus: "accepted",
+        createdAt: now
+      };
+      statement.run(event.id, event.kind, event.text, event.source, JSON.stringify(event.evidence), event.reviewStatus, event.createdAt);
+      inserted.push(event);
+    }
+    db.exec("COMMIT");
+  } catch (insertError) {
+    db.exec("ROLLBACK");
+    throw insertError;
+  }
+  const graph = await syncAcceptedMemoryEvents();
+  const memory = {
+    storedCount: inserted.length,
+    ids: inserted.map((event) => event.id),
+    categories: [...new Set(spec.memories.map((memory) => memory.category))],
+    reviewStatus: "accepted"
+  };
+  return graph.ok ? { ok: true, memory, graph } : { ok: false, error: "graph_memory_write_failed", memory, graph };
+}
+
+function validateAutonomousMemory(spec) {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec) || Object.keys(spec).some((key) => key !== "memories")) return "invalid_memory_tool_arguments";
+  if (!Array.isArray(spec.memories) || spec.memories.length < 1 || spec.memories.length > 4) return "invalid_memory_tool_count";
+  const texts = new Set();
+  for (const memory of spec.memories) {
+    if (!memory || typeof memory !== "object" || Array.isArray(memory) || Object.keys(memory).some((key) => !["category", "text", "subject", "relation", "object"].includes(key))) return "invalid_memory_tool_item";
+    if (!autonomousMemoryKinds[memory.category]) return "invalid_memory_tool_category";
+    if (typeof memory.text !== "string" || memory.text.trim().length < 2 || memory.text.trim().length > 1000) return "invalid_memory_tool_text";
+    if (typeof memory.subject !== "string" || memory.subject.trim().length < 1 || memory.subject.trim().length > 200) return "invalid_memory_tool_subject";
+    if (typeof memory.relation !== "string" || memory.relation.trim().length < 1 || memory.relation.trim().length > 120) return "invalid_memory_tool_relation";
+    if (typeof memory.object !== "string" || memory.object.trim().length < 1 || memory.object.trim().length > 500) return "invalid_memory_tool_object";
+    if (containsSensitiveData([memory.text, memory.subject, memory.relation, memory.object].join("\n"))) return "sensitive_memory_data";
+    const normalized = memory.text.trim().toLowerCase();
+    if (texts.has(normalized)) return "duplicate_memory_tool_text";
+    texts.add(normalized);
+  }
+  return "";
+}
+
+function validateQuizSpec(spec) {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) return "invalid_test";
+  if (typeof spec.topic !== "string" || spec.topic.trim().length < 2 || spec.topic.trim().length > 200) return "invalid_test_topic";
+  if (typeof spec.level !== "string" || spec.level.trim().length < 2 || spec.level.trim().length > 80) return "invalid_test_level";
+  if (!Array.isArray(spec.questions) || spec.questions.length < 4 || spec.questions.length > 15) return "invalid_test_question_count";
+  if (containsSensitiveData(JSON.stringify(spec))) return "sensitive_test_data";
+  for (const question of spec.questions) {
+    if (!question || typeof question.prompt !== "string" || !question.prompt.trim() || question.prompt.length > 2000) return "invalid_test_question";
+    if (!Array.isArray(question.options) || question.options.length < 2 || question.options.length > 6) return "invalid_test_options";
+    if (question.options.some((option) => typeof option !== "string" || !option.trim() || option.length > 500)) return "invalid_test_option";
+    if (new Set(question.options.map((option) => option.trim())).size !== question.options.length) return "duplicate_test_options";
+    if (!Number.isInteger(question.correctAnswer) || question.correctAnswer < 0 || question.correctAnswer >= question.options.length) return "invalid_test_correct_answer";
+    if (typeof question.explanation !== "string" || !question.explanation.trim() || question.explanation.length > 2000) return "invalid_test_explanation";
+  }
+  return "";
+}
+
+function saveQuiz(spec) {
+  const test = { id: crypto.randomUUID(), topic: spec.topic.trim(), level: spec.level.trim(), createdAt: new Date().toISOString() };
+  const insertQuestion = db.prepare("INSERT INTO quiz_questions (test_id, prompt, options, correct_answer, explanation, position) VALUES (?, ?, ?, ?, ?, ?)");
+  db.exec("BEGIN");
+  try {
+    db.prepare("INSERT INTO quiz_tests (id, topic, level, created_at) VALUES (?, ?, ?, ?)").run(test.id, test.topic, test.level, test.createdAt);
+    spec.questions.forEach((question, index) => insertQuestion.run(test.id, question.prompt.trim(), JSON.stringify(question.options.map((option) => option.trim())), question.correctAnswer, question.explanation.trim(), index));
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return readQuiz(test.id);
+}
+
+function assistantResponseText(data) {
+  if (typeof data?.output_text === "string") return data.output_text;
+  if (typeof data?.choices?.[0]?.message?.content === "string") return data.choices[0].message.content;
+  return (data?.output || []).flatMap((item) => item.content || []).find((item) => typeof item?.text === "string")?.text || "";
+}
+
+function quizTests(_req, res) {
+  sendJson(res, 200, { tests: readQuizzes() });
+}
+
+function quizTest(_req, res, url) {
+  const test = readQuiz(decodeURIComponent(url.pathname.slice("/api/tests/".length)));
+  if (!test) return sendJson(res, 404, { error: "test_not_found" });
+  sendJson(res, 200, { test });
+}
+
+async function quizAttempt(req, res, url) {
+  const testId = decodeURIComponent(url.pathname.slice("/api/tests/".length, -"/attempts".length));
+  const test = readQuiz(testId);
+  if (!test) return sendJson(res, 404, { error: "test_not_found" });
+  const body = await readJson(req);
+  if (!Array.isArray(body.answers) || body.answers.length !== test.questions.length) return sendJson(res, 400, { error: "invalid_test_attempt_answers" });
+  if (body.answers.some((answer, index) => !Number.isInteger(answer) || answer < 0 || answer >= test.questions[index].options.length)) {
+    return sendJson(res, 400, { error: "invalid_test_attempt_answers" });
+  }
+  const results = test.questions.map((question, index) => ({
+    correct: body.answers[index] === question.correctAnswer,
+    correctAnswer: question.correctAnswer,
+    explanation: question.explanation
+  }));
+  const attempt = {
+    id: crypto.randomUUID(),
+    testId,
+    topic: test.topic,
+    correctCount: results.filter((result) => result.correct).length,
+    totalCount: test.questions.length,
+    createdAt: new Date().toISOString()
+  };
+  db.prepare("INSERT INTO quiz_attempts (id, test_id, answers, correct_count, total_count, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(attempt.id, testId, JSON.stringify(body.answers), attempt.correctCount, attempt.totalCount, attempt.createdAt);
+  sendJson(res, 200, { ok: true, attempt: { ...attempt, results } });
+}
+
+function readQuizzes() {
+  return db.prepare("SELECT id, topic, level, created_at AS createdAt FROM quiz_tests ORDER BY created_at DESC").all().map((test) => readQuiz(test.id));
+}
+
+function readQuiz(id) {
+  const test = db.prepare("SELECT id, topic, level, created_at AS createdAt FROM quiz_tests WHERE id = ?").get(id);
+  if (!test) return null;
+  return {
+    ...test,
+    questions: db.prepare("SELECT prompt, options, correct_answer AS correctAnswer, explanation FROM quiz_questions WHERE test_id = ? ORDER BY position").all(id)
+      .map((question) => ({ ...question, options: parseJson(question.options) }))
+  };
+}
+
+function readQuizAttempts() {
+  return db.prepare(`SELECT a.id, a.test_id AS testId, t.topic, a.correct_count AS correctCount,
+    a.total_count AS totalCount, a.created_at AS createdAt
+    FROM quiz_attempts a JOIN quiz_tests t ON t.id = a.test_id
+    ORDER BY a.created_at DESC`).all();
+}
+
+function containsSensitiveData(value) {
+  const text = String(value || "");
+  return /\b[a-z0-9_-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization)[a-z0-9_-]*\s*[:=]\s*\S+/i.test(text)
+    || /\bsk-[a-z0-9_-]{12,}\b/i.test(text)
+    || /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/.test(text)
+    || /(?:\+?\d[\s().-]*){10,}/.test(text);
 }
 
 async function workspaceFiles(_req, res, url) {
@@ -1097,7 +1705,12 @@ function readAssistantChats() {
   return db.prepare("SELECT id, label, project_id AS projectId, task_id AS taskId, created_at AS createdAt, updated_at AS updatedAt FROM assistant_chats ORDER BY updated_at DESC").all()
     .map((chat) => ({
       ...chat,
-      messages: db.prepare("SELECT role, content, created_at AS createdAt FROM assistant_messages WHERE chat_id = ? ORDER BY id").all(chat.id)
+      messages: db.prepare("SELECT role, content, action, created_at AS createdAt FROM assistant_messages WHERE chat_id = ? ORDER BY id").all(chat.id)
+        .map((message) => {
+          const action = message.action ? parseJson(message.action) : null;
+          const test = action?.type === "open_test" ? readQuiz(action.targetId) : null;
+          return { ...message, content: test ? testCreatedChatMessage(test) : message.content, action };
+        })
     }));
 }
 
@@ -1400,6 +2013,7 @@ async function personality(req, res) {
     if (markdown !== undefined && typeof markdown !== "string") return sendJson(res, 400, { error: "invalid_personality_markdown" });
     const text = markdown || "";
     if (text.length > 100000) return sendJson(res, 413, { error: "personality_too_large" });
+    if (containsSensitiveData(text)) return sendJson(res, 400, { error: "sensitive_personality_data" });
     await writePersonality(text);
     return sendJson(res, 200, { ok: true });
   }
@@ -1527,12 +2141,25 @@ function readSetting(key) {
 }
 
 function readSettings() {
+  const stored = Object.fromEntries(db.prepare("SELECT key, value FROM settings").all().map((row) => [row.key, row.value]));
+  const {
+    graphProvider: _graphProvider,
+    graphLlmBaseUrl: _graphLlmBaseUrl,
+    graphLlmModel: _graphLlmModel,
+    graphSmallModel: _graphSmallModel,
+    graphMaxTokens: _graphMaxTokens,
+    ...visible
+  } = stored;
   return {
-    workspaceRuntime: "code-server",
-    workspaceRuntimeUrl: process.env.WORKSPACE_RUNTIME_URL || "",
-    agentRuntimeUrl: process.env.AGENT_RUNTIME_URL || "",
-    graphMemoryUrl: process.env.GRAPH_MEMORY_URL || "",
-    ...Object.fromEntries(db.prepare("SELECT key, value FROM settings").all().map((row) => [row.key, row.value]))
+    ...visible,
+    workspaceRuntime: stored.workspaceRuntime || "code-server",
+    workspaceRuntimeUrl: stored.workspaceRuntimeUrl || process.env.WORKSPACE_RUNTIME_URL || "http://127.0.0.1:8080",
+    agentRuntimeUrl: stored.agentRuntimeUrl || process.env.AGENT_RUNTIME_URL || "http://127.0.0.1:3000",
+    graphMemoryUrl: stored.graphMemoryUrl || process.env.GRAPH_MEMORY_URL || "http://127.0.0.1:8008",
+    graphEmbeddingProvider: stored.graphEmbeddingProvider || stored.graphProvider || process.env.GRAPH_EMBEDDING_PROVIDER || process.env.GRAPHITI_LLM_PROVIDER || "openrouter",
+    graphEmbeddingBaseUrl: stored.graphEmbeddingBaseUrl || process.env.GRAPH_EMBEDDING_BASE_URL || process.env.GRAPHITI_EMBEDDING_BASE_URL || "https://openrouter.ai/api/v1",
+    graphEmbeddingModel: stored.graphEmbeddingModel || process.env.GRAPH_EMBEDDING_MODEL || process.env.GRAPHITI_EMBEDDING_MODEL || "openai/text-embedding-3-small",
+    graphEmbeddingDim: stored.graphEmbeddingDim || process.env.GRAPH_EMBEDDING_DIM || process.env.GRAPHITI_EMBEDDING_DIM || "1536"
   };
 }
 
@@ -1652,6 +2279,11 @@ function positiveNumber(value, fallback) {
 function positiveSetting(value, min) {
   const number = Number(value);
   return Number.isFinite(number) && number >= min;
+}
+
+function boundedIntegerSetting(value, min, max) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= min && number <= max;
 }
 
 function sendJson(res, status, payload) {

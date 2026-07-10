@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { providers } from "./platform.js";
-import { buildActivityCalendar, profileAvatarSrc } from "./profile.js";
+import { buildActivityCalendar, buildActivityEvents, buildMemoryGraph, profileAvatarSrc } from "./profile.js";
 
 const sections = [
   { id: "overview", label: "Обзор", hint: "Активность и контекст" },
   { id: "llm", label: "LLM и стек", hint: "Модели и runtime" },
+  { id: "graph-memory", label: "Графовая память", hint: "Что помнит куратор" },
   { id: "personalization", label: "Персонализация", hint: "Память куратора" }
 ];
 
@@ -12,6 +13,27 @@ const mascotOptions = [
   { id: "05_laptop_spiky", label: "Кодер" },
   { id: "organic_spiky_concept", label: "Органик" }
 ];
+
+const graphProviders = {
+  openrouter: {
+    label: "OpenRouter",
+    embeddingBaseUrl: "https://openrouter.ai/api/v1",
+    embeddingModel: "openai/text-embedding-3-small",
+    embeddingDim: "1536"
+  },
+  openai: {
+    label: "OpenAI",
+    embeddingBaseUrl: "https://api.openai.com/v1",
+    embeddingModel: "text-embedding-3-small",
+    embeddingDim: "1536"
+  },
+  yandex: {
+    label: "Yandex AI Studio",
+    embeddingBaseUrl: "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding",
+    embeddingModel: "text-embeddings-v2-doc",
+    embeddingDim: "256"
+  }
+};
 
 function completedTask(task) {
   return /passed|done|complete|готов|выполн/i.test(String(task?.status || ""));
@@ -27,7 +49,70 @@ function Field({ label, hint, children }) {
   );
 }
 
-export default function ProfileOverlay({ open, onClose, app, runtime, requestJson, onSettingsSaved }) {
+function compactGraphText(value, limit = 22) {
+  const text = String(value || "");
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+function profileDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function MemoryGraph({ items }) {
+  const graph = buildMemoryGraph(items);
+  return (
+    <div className="memoryGraphViewport">
+      <svg className="memoryGraph" viewBox="0 0 960 520" role="img" aria-label={`Граф памяти: ${graph.nodes.length} сущностей, ${graph.edges.length} связей`}>
+        <defs>
+          <marker id="memory-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" />
+          </marker>
+        </defs>
+        <g className="memoryGraphEdges">
+          {graph.edges.map((edge) => {
+            const dx = edge.to.x - edge.from.x;
+            const dy = edge.to.y - edge.from.y;
+            const distance = Math.max(1, Math.hypot(dx, dy));
+            const unitX = dx / distance;
+            const unitY = dy / distance;
+            const startX = edge.from.x + unitX * 92;
+            const startY = edge.from.y + unitY * 34;
+            const endX = edge.to.x - unitX * 98;
+            const endY = edge.to.y - unitY * 34;
+            const bend = edge.index % 2 === 0 ? -18 : 18;
+            const middleX = (startX + endX) / 2;
+            const middleY = (startY + endY) / 2 + bend;
+            const relation = compactGraphText(edge.relation, 20);
+            const labelWidth = Math.max(64, Math.min(168, relation.length * 7 + 22));
+            return (
+              <g key={`${edge.uuid || edge.index}:${edge.subject}:${edge.object}`}>
+                <title>{edge.fact}</title>
+                <path d={`M ${startX} ${startY} Q ${middleX} ${middleY + bend} ${endX} ${endY}`} markerEnd="url(#memory-arrow)" />
+                <g className="memoryEdgeLabel" transform={`translate(${middleX - labelWidth / 2} ${middleY - 13})`}>
+                  <rect width={labelWidth} height="26" rx="13" />
+                  <text x={labelWidth / 2} y="17" textAnchor="middle">{relation}</text>
+                </g>
+              </g>
+            );
+          })}
+        </g>
+        <g className="memoryGraphNodes">
+          {graph.nodes.map((node, index) => (
+            <g className={index === 0 ? "memoryNode hub" : "memoryNode"} key={node.id} transform={`translate(${node.x - 90} ${node.y - 28})`}>
+              <title>{node.id}</title>
+              <rect width="180" height="56" rx="16" />
+              <circle cx="20" cy="28" r="4" />
+              <text x="34" y="33">{compactGraphText(node.id)}</text>
+            </g>
+          ))}
+        </g>
+      </svg>
+    </div>
+  );
+}
+
+export default function ProfileOverlay({ open, onClose, app, runtime, requestJson, onSettingsSaved, onRuntimeUpdated }) {
   const dialogRef = useRef(null);
   const [section, setSection] = useState("overview");
   const [search, setSearch] = useState("");
@@ -35,6 +120,8 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
   const [models, setModels] = useState([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [personality, setPersonality] = useState("");
+  const [graphMemory, setGraphMemory] = useState({ loading: false, error: "", items: [], groups: [] });
+  const [graphRefreshKey, setGraphRefreshKey] = useState(0);
   const [notice, setNotice] = useState({ type: "", text: "" });
   const [saving, setSaving] = useState(false);
 
@@ -49,9 +136,15 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
       providerModel: settings.providerModel || "",
       providerKey: "",
       workspaceRuntime: settings.workspaceRuntime || "code-server",
-      workspaceRuntimeUrl: settings.workspaceRuntimeUrl || "",
-      agentRuntimeUrl: settings.agentRuntimeUrl || "",
-      graphMemoryUrl: settings.graphMemoryUrl || ""
+      workspaceRuntimeUrl: settings.workspaceRuntimeUrl || "http://127.0.0.1:8080",
+      agentRuntimeUrl: settings.agentRuntimeUrl || "http://127.0.0.1:3000",
+      graphMemoryUrl: settings.graphMemoryUrl || "http://127.0.0.1:8008",
+      graphEmbeddingProvider: settings.graphEmbeddingProvider || "openrouter",
+      graphEmbeddingBaseUrl: settings.graphEmbeddingBaseUrl || "https://openrouter.ai/api/v1",
+      graphEmbeddingModel: settings.graphEmbeddingModel || "openai/text-embedding-3-small",
+      graphEmbeddingDim: settings.graphEmbeddingDim || "1536",
+      graphApiKey: "",
+      graphYandexFolderId: ""
     });
   }, [app?.settings]);
 
@@ -76,11 +169,29 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
     };
   }, [open, requestJson]);
 
+  useEffect(() => {
+    if (!open || section !== "graph-memory") return;
+    let cancelled = false;
+    setGraphMemory((current) => ({ ...current, loading: true, error: "" }));
+    requestJson("/api/memory/graph-items")
+      .then((data) => {
+        if (!cancelled) setGraphMemory({ loading: false, error: data.ok ? "" : data.error || "graph_memory_unavailable", items: data.items || [], groups: data.groups || [] });
+      })
+      .catch((error) => {
+        if (!cancelled) setGraphMemory({ loading: false, error: error.message, items: [], groups: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [graphRefreshKey, open, requestJson, section]);
+
   const activity = buildActivityCalendar(app);
+  const activityEvents = buildActivityEvents(app);
   const settings = app?.settings || {};
   const activeProvider = providers.find((item) => item.id === form.providerId) || providers[1];
   const providerStatus = app?.providerStatus?.[form.providerId];
   const taskLogs = app?.taskLogs || [];
+  const latestQuizAttempt = app?.quizAttempts?.[0];
   const visibleSections = sections.filter((item) => `${item.label} ${item.hint}`.toLowerCase().includes(search.trim().toLowerCase()));
 
   function change(key, value) {
@@ -96,6 +207,19 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
       providerBaseUrl: provider?.baseUrl || "",
       providerModel: "",
       providerKey: ""
+    }));
+  }
+
+  function chooseGraphProvider(graphEmbeddingProvider) {
+    const defaults = graphProviders[graphEmbeddingProvider];
+    setForm((current) => ({
+      ...current,
+      graphEmbeddingProvider,
+      graphEmbeddingBaseUrl: defaults.embeddingBaseUrl,
+      graphEmbeddingModel: defaults.embeddingModel,
+      graphEmbeddingDim: defaults.embeddingDim,
+      graphApiKey: "",
+      graphYandexFolderId: ""
     }));
   }
 
@@ -124,8 +248,7 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
     await saveSettings({ profileName: form.profileName, mascotId: form.mascotId }, "Профиль обновлён.");
   }
 
-  async function saveLlm(event) {
-    event.preventDefault();
+  function llmSettingsPayload() {
     const payload = {
       providerId: form.providerId,
       providerBaseUrl: form.providerBaseUrl,
@@ -133,11 +256,52 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
       workspaceRuntime: form.workspaceRuntime,
       workspaceRuntimeUrl: form.workspaceRuntimeUrl,
       agentRuntimeUrl: form.agentRuntimeUrl,
-      graphMemoryUrl: form.graphMemoryUrl
+      graphMemoryUrl: form.graphMemoryUrl,
+      graphEmbeddingProvider: form.graphEmbeddingProvider,
+      graphEmbeddingBaseUrl: form.graphEmbeddingBaseUrl,
+      graphEmbeddingModel: form.graphEmbeddingModel,
+      graphEmbeddingDim: form.graphEmbeddingDim
     };
     if (form.providerKey.trim()) payload.providerApiKeys = { [form.providerId]: form.providerKey.trim() };
+    if (form.graphApiKey.trim()) payload.graphApiKey = form.graphApiKey.trim();
+    if (form.graphYandexFolderId.trim()) payload.graphYandexFolderId = form.graphYandexFolderId.trim();
+    return payload;
+  }
+
+  function clearSavedKeys() {
+    change("providerKey", "");
+    change("graphApiKey", "");
+    change("graphYandexFolderId", "");
+  }
+
+  async function saveLlm(event) {
+    event.preventDefault();
+    const payload = llmSettingsPayload();
     const result = await saveSettings(payload, "LLM и runtime сохранены.");
-    if (result) change("providerKey", "");
+    if (result) clearSavedKeys();
+  }
+
+  async function saveAndStartRuntime() {
+    const saved = await saveSettings(llmSettingsPayload(), "Настройки сохранены. Запускаю контур…");
+    if (!saved) return;
+    clearSavedKeys();
+    setSaving(true);
+    try {
+      const result = await requestJson("/api/runtime/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({})
+      });
+      onRuntimeUpdated(result.runtime);
+      setNotice({
+        type: result.runtime?.graph?.ok ? "success" : "",
+        text: result.runtime?.graph?.ok ? "Единый контур запущен, Graph Memory готова." : "Контур запущен. Сервисы ещё прогреваются — статус обновлён."
+      });
+    } catch (error) {
+      setNotice({ type: "error", text: `Не удалось запустить контур: ${error.message}` });
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function connectProviderAndLoadModels() {
@@ -259,6 +423,7 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
                   <article><span>Завершено</span><strong>{taskLogs.filter(completedTask).length}</strong><small>задач</small></article>
                   <article><span>Диалоги</span><strong>{app?.assistantChats?.length || 0}</strong><small>с куратором</small></article>
                   <article><span>Память</span><strong>{app?.memoryEvents?.length || 0}</strong><small>наблюдений</small></article>
+                  <article><span>Последний тест</span><strong>{latestQuizAttempt ? `${latestQuizAttempt.correctCount}/${latestQuizAttempt.totalCount}` : "—"}</strong><small>правильных ответов</small></article>
                   <article><span>Активность</span><strong>{activity.activeDays}</strong><small>дней / 12 месяцев</small></article>
                 </div>
                 <section className="activityPanel">
@@ -271,6 +436,17 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
                     ))}
                   </div>
                   <div className="activityLegend"><span>Меньше</span>{[0, 1, 2, 3, 4].map((level) => <i className={`level-${level}`} key={level} />)}<span>Больше</span></div>
+                  <div className="activityEvents">
+                    <div className="activityEventsTitle"><p>Последние события</p><span>{activityEvents.length}</span></div>
+                    {activityEvents.length ? <ol>{activityEvents.map((event) => (
+                      <li className={event.type} key={`${event.type}:${event.id}`}>
+                        <i aria-hidden="true" />
+                        <div><strong>{event.title}</strong><span>{event.detail}</span></div>
+                        <b>{event.value}</b>
+                        <time dateTime={event.createdAt}>{profileDate(event.createdAt)}</time>
+                      </li>
+                    ))}</ol> : <p className="activityEventsEmpty">События появятся после первой практики.</p>}
+                  </div>
                 </section>
               </div>
             ) : null}
@@ -296,26 +472,82 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
                   ) : null}
                 </div>
                 <div className="settingsBlock">
-                  <div className="settingsBlockTitle"><div><h4>Runtime</h4><p>Workspace, coding agent и graph memory.</p></div><span className={runtime?.ok ? "configured" : ""}>{runtime?.ok ? "online" : "check"}</span></div>
+                  <div className="settingsBlockTitle"><div><h4>Runtime</h4><p>Workspace и coding agent в локальном контуре.</p></div><span className={runtime?.workspace?.ok && runtime?.agent?.ok ? "configured" : ""}>{runtime?.workspace?.ok && runtime?.agent?.ok ? "online" : "check"}</span></div>
                   <div className="fieldGrid two">
                     <Field label="Workspace"><select value={form.workspaceRuntime || "code-server"} onChange={(event) => change("workspaceRuntime", event.target.value)}><option value="code-server">code-server</option><option value="openvscode-server">openvscode-server</option></select></Field>
                     <Field label="Workspace URL"><input value={form.workspaceRuntimeUrl || ""} onChange={(event) => change("workspaceRuntimeUrl", event.target.value)} type="url" placeholder="http://…" /></Field>
                     <Field label="Agent URL"><input value={form.agentRuntimeUrl || ""} onChange={(event) => change("agentRuntimeUrl", event.target.value)} type="url" placeholder="http://…" /></Field>
-                    <Field label="Graph memory URL"><input value={form.graphMemoryUrl || ""} onChange={(event) => change("graphMemoryUrl", event.target.value)} type="url" placeholder="http://…" /></Field>
+                  </div>
+                </div>
+                <div className="settingsBlock">
+                  <div className="settingsBlockTitle"><div><h4>Graph Memory</h4><p>Чатовая LLM формирует связи, backend сохраняет их в FalkorDB. Здесь нужен только эмбеддер для поиска.</p></div><span className={runtime?.graph?.ok ? "configured" : ""}>{runtime?.graph?.ok ? "online" : runtime?.graph?.configured ? "offline" : "setup"}</span></div>
+                  <div className="fieldGrid two">
+                    <Field label="Embedding provider"><select value={form.graphEmbeddingProvider || "openrouter"} onChange={(event) => chooseGraphProvider(event.target.value)}>{Object.entries(graphProviders).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select></Field>
+                    <Field label="Graph memory URL"><input value={form.graphMemoryUrl || ""} onChange={(event) => change("graphMemoryUrl", event.target.value)} type="url" placeholder="http://127.0.0.1:8008" /></Field>
+                    <Field label="Embedding model"><input value={form.graphEmbeddingModel || ""} onChange={(event) => change("graphEmbeddingModel", event.target.value)} placeholder="embedding-model-id" /></Field>
+                    <Field label="Embedding base URL"><input value={form.graphEmbeddingBaseUrl || ""} onChange={(event) => change("graphEmbeddingBaseUrl", event.target.value)} type="url" /></Field>
+                    <Field label="Embedding dimension"><input value={form.graphEmbeddingDim || ""} onChange={(event) => change("graphEmbeddingDim", event.target.value)} type="number" min="1" max="8192" /></Field>
+                    <Field label="Embedding API key" hint="Используется только backend-ом; пустое поле оставит текущий ключ."><input value={form.graphApiKey || ""} onChange={(event) => change("graphApiKey", event.target.value)} type="password" autoComplete="new-password" /></Field>
+                    {form.graphEmbeddingProvider === "yandex" ? <Field label="Yandex folder ID"><input value={form.graphYandexFolderId || ""} onChange={(event) => change("graphYandexFolderId", event.target.value)} type="password" autoComplete="new-password" /></Field> : null}
                   </div>
                 </div>
                 <div className="integrationNotice"><div><strong>Web search и дополнительные tools</strong><span>Требуется backend connector registry</span></div></div>
-                <button className="settingsSave" type="submit" disabled={saving}>Сохранить LLM и стек</button>
+                <div className="settingsActions">
+                  <button className="settingsSave" type="button" onClick={saveAndStartRuntime} disabled={saving}>{saving ? "Запускаю…" : "Сохранить и запустить контур"}</button>
+                  <button className="settingsSecondary" type="submit" disabled={saving}>Только сохранить</button>
+                </div>
               </form>
+            ) : null}
+
+            {section === "graph-memory" ? (
+              <div className="profileSection graphMemorySection">
+                <header className="graphMemoryHero">
+                  <div>
+                    <p>LIVE / FALKORDB</p>
+                    <h3>Что помнит куратор</h3>
+                  </div>
+                  <div className="graphMemoryHeroMeta">
+                    <strong>{graphMemory.items.length}</strong>
+                    <span>связей</span>
+                    <button type="button" onClick={() => setGraphRefreshKey((value) => value + 1)} disabled={graphMemory.loading}>Обновить</button>
+                  </div>
+                </header>
+
+                {graphMemory.loading ? <div className="graphMemoryState" role="status">Читаю Graph Memory…</div> : null}
+                {!graphMemory.loading && graphMemory.error ? (
+                  <div className="graphMemoryState error" role="status">
+                    <strong>Не удалось прочитать Graph Memory</strong>
+                    <span>Проверьте, что единый контур запущен и embedder настроен.</span>
+                    <button type="button" onClick={() => setGraphRefreshKey((value) => value + 1)}>Повторить</button>
+                  </div>
+                ) : null}
+                {!graphMemory.loading && !graphMemory.error && !graphMemory.items.length ? (
+                  <div className="graphMemoryState empty">
+                    <strong>Память пока пуста</strong>
+                    <span>Когда куратор сохранит устойчивый факт, его связь появится здесь.</span>
+                  </div>
+                ) : null}
+                {!graphMemory.loading && !graphMemory.error && graphMemory.items.length ? (
+                  <MemoryGraph items={graphMemory.items} />
+                ) : null}
+              </div>
             ) : null}
 
             {section === "personalization" ? (
               <form className="profileSection personalityForm" onSubmit={savePersonality}>
-                <div className="settingsIntro"><h3>Память куратора</h3><p>Markdown используется моделью для устойчивых предпочтений, сильных сторон и проблемных тем.</p></div>
-                <Field label="personality.md" hint="Изменения сохраняются через существующий /api/personality.">
-                  <textarea value={personality} onChange={(event) => setPersonality(event.target.value)} rows="18" />
-                </Field>
-                <button className="settingsSave" type="submit" disabled={saving}>Сохранить персонализацию</button>
+                <div className="personalityWorkspace">
+                  <aside className="personalityGuide">
+                    <p>PERSONALITY.MD</p>
+                    <h3>Память куратора</h3>
+                    <span>Устойчивый контекст, который задаёт стиль помощи и учебный фокус.</span>
+                    <ul><li>Кодовые привычки</li><li>Проблемные темы</li><li>Сильные стороны</li><li>Предпочтения в ответах</li></ul>
+                  </aside>
+                  <div className="personalityEditor">
+                    <header><strong>Контекст куратора</strong><span>Markdown · local</span></header>
+                    <textarea aria-label="Контекст куратора" value={personality} onChange={(event) => setPersonality(event.target.value)} rows="18" />
+                    <footer><span>{personality.length} символов</span><button className="settingsSave" type="submit" disabled={saving}>Сохранить</button></footer>
+                  </div>
+                </div>
               </form>
             ) : null}
           </div>

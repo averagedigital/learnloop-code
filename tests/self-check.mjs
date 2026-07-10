@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { assistantMarkdownToHtml, buildMascotAssistantPrompt, extractAssistantText } from "../src/mascot-assistant.js";
-import { buildActivityCalendar, profileMascotFrameSrc } from "../src/profile.js";
+import { buildActivityCalendar, buildActivityEvents, buildMemoryGraph, profileMascotFrameSrc } from "../src/profile.js";
 import { buildAdaptiveDrillPrompt, buildCodebaseLessonPrompt, buildLessonPrompt, buildModelListRequest, buildProviderPayload, buildSkillGraphPrompt, buildSocraticHintPrompt, buildTeamLeadTaskPrompt, buildTutorPrompt, createMemoryStore, gradeByLessonSpec, llmTools, modelControlPrompt, parseGeneratedJson, personalityTemplate, providers, sampleLesson, toolsForProvider, validateLessonSpec } from "../src/platform.js";
 
 globalThis.performance = { now: () => 10 };
@@ -40,7 +40,7 @@ assert.ok(modelControlPrompt.includes("не заявляй, что действ�
 assert.ok(!modelControlPrompt.includes("Для теста: ровно 10 вопросов"));
 assert.deepEqual(parseGeneratedJson('## ТЗ\n\nСделать задачу.\n\n```json\n{"title":"X","tasks":[]}\n```'), { title: "X", tasks: [] });
 assert.ok(personalityTemplate.includes("# Кодовые привычки"));
-assert.deepEqual(llmTools.map((tool) => tool.name), ["review_personality", "add_personality", "delete_personality", "create_task", "create_test", "update_skill_graph", "create_adaptive_drill", "check_hint_leakage", "create_codebase_lesson"]);
+assert.deepEqual(llmTools.map((tool) => tool.name), ["review_personality", "add_personality", "delete_personality", "create_task", "create_test", "remember_context", "update_skill_graph", "create_adaptive_drill", "check_hint_leakage", "create_codebase_lesson"]);
 
 const task = sampleLesson.tasks[0];
 const failed = gradeByLessonSpec(task, task.starterCode);
@@ -106,7 +106,12 @@ const yandexModelList = buildModelListRequest(providers[2]);
 assert.deepEqual(yandexModelList.envHeaders, { "x-folder-id": "YANDEX_AI_STUDIO_FOLDER_ID" });
 
 assert.equal(toolsForProvider("openai-chat-compatible")[0].type, "function");
-assert.equal(toolsForProvider("openai-chat-compatible")[0].function.name, "review_personality");
+assert.equal(toolsForProvider("openai-chat-compatible")[0].function.name, "create_test");
+assert.deepEqual(toolsForProvider("openai-chat-compatible").map((tool) => tool.function.name), ["create_test", "remember_context"]);
+assert.equal(toolsForProvider("openai-chat-compatible")[0].function.parameters.properties.questions.minItems, 4);
+assert.equal(toolsForProvider("openai-responses")[0].parameters.properties.questions.maxItems, 15);
+assert.equal(toolsForProvider("openai-responses")[1].parameters.properties.memories.maxItems, 4);
+assert.deepEqual(toolsForProvider("openai-responses")[1].parameters.properties.memories.items.required, ["category", "text", "subject", "relation", "object"]);
 
 const activity = buildActivityCalendar({
   taskLogs: [{ updatedAt: "2026-07-08T09:00:00.000Z" }],
@@ -114,14 +119,31 @@ const activity = buildActivityCalendar({
     { createdAt: "2026-07-08T10:00:00.000Z" },
     { createdAt: "2026-07-08T10:01:00.000Z" }
   ] }],
-  memoryEvents: [{ createdAt: "2026-07-08T11:00:00.000Z" }]
+  memoryEvents: [{ createdAt: "2026-07-08T11:00:00.000Z" }],
+  quizAttempts: [{ createdAt: "2026-07-08T12:00:00.000Z", correctCount: 3, totalCount: 4 }]
 }, 2, new Date("2026-07-10T12:00:00.000Z"));
 const activeCell = activity.weeks.flat().find((cell) => cell.date === "2026-07-08");
-assert.equal(activity.total, 4);
+assert.equal(activity.total, 5);
 assert.equal(activity.activeDays, 1);
-assert.equal(activeCell.count, 4);
-assert.equal(activeCell.level, 3);
+assert.equal(activeCell.count, 5);
+assert.equal(activeCell.level, 4);
 assert.equal(buildActivityCalendar({}, undefined, new Date("2026-07-10T12:00:00.000Z")).weeks.length, 52);
+const activityEvents = buildActivityEvents({
+  quizAttempts: [{ id: "quiz-1", topic: "Data leakage", correctCount: 3, totalCount: 4, createdAt: "2026-07-10T12:00:00.000Z" }],
+  memoryEvents: [{ id: "memory-1", text: "Предпочитает короткие ответы", reviewStatus: "accepted", createdAt: "2026-07-10T11:00:00.000Z" }],
+  taskLogs: [{ id: "task-1", label: "Задача завершена", status: "passed", updatedAt: "2026-07-10T10:00:00.000Z" }]
+});
+assert.deepEqual(activityEvents.map((event) => event.type), ["quiz", "memory", "task"]);
+assert.deepEqual(activityEvents[0], { id: "quiz-1", type: "quiz", title: "Пройден тест", detail: "Data leakage", value: "3/4 баллов", createdAt: "2026-07-10T12:00:00.000Z" });
+const memoryGraph = buildMemoryGraph([
+  { uuid: "edge-1", subject: "CodeLearnML", relation: "uses", object: "FalkorDB", fact: "Uses FalkorDB" },
+  { uuid: "edge-2", subject: "CodeLearnML", relation: "stores", object: "direct triples", fact: "Stores direct triples" }
+]);
+assert.equal(memoryGraph.nodes.length, 3);
+assert.equal(memoryGraph.edges.length, 2);
+assert.equal(memoryGraph.nodes[0].id, "CodeLearnML");
+assert.equal(memoryGraph.nodes[0].x, 480);
+assert.equal(memoryGraph.edges[0].from.id, "CodeLearnML");
 assert.equal(profileMascotFrameSrc("05_laptop_spiky", "thinking", 13), "/assets/mascots/05_laptop_spiky/frames/thinking/frame_02.png");
 assert.equal(profileMascotFrameSrc("organic_spiky_concept", "typing", 23), "/assets/mascots/organic_spiky_concept/frames/typing/frame_24.png");
 
@@ -151,8 +173,9 @@ assert.match(appSource, /window\.location\.hash/);
 assert.match(appSource, /\/api\/app-state/);
 assert.match(appSource, /\/api\/runtime\/health/);
 assert.match(appSource, /\/api\/assistant\/chats/);
-assert.match(appSource, /\/api\/responses/);
-assert.match(appSource, /buildProviderPayload/);
+assert.match(appSource, /\/api\/assistant\/respond/);
+assert.doesNotMatch(appSource, /\/api\/responses/);
+assert.doesNotMatch(appSource, /buildProviderPayload/);
 assert.match(appSource, /chatComposer/);
 assert.match(appSource, /CanvasNeuralFlow/);
 assert.match(appSource, /composerNeuralCanvas/);
@@ -165,6 +188,12 @@ assert.match(appSource, /Что попрактикуем сегодня\?/);
 assert.doesNotMatch(appSource, /Разбери этот код и объясни, где риск ошибки\./);
 assert.doesNotMatch(appSource, /Куратор LLM<\/strong>/);
 assert.match(appSource, /sidebarHandle/);
+assert.match(appSource, /<div className="sidebarHeader">[\s\S]*className="sidebarHandle"/);
+assert.match(appSource, /activeTab === "tests" \? "Сохранённые тесты" : "Сохранённые чаты"/);
+assert.match(appSource, /activeTab === "tests" \? tests\.map/);
+assert.match(appSource, /onClick=\{\(\) => openTest\(test\.id\)\}/);
+assert.match(appSource, /activeTab === "chat" \? <button className="newChatButton"/);
+assert.doesNotMatch(appSource, /className="testPicker"/);
 assert.match(appSource, /composerMascot/);
 assert.match(appSource, /ProfileOverlay/);
 assert.match(appSource, /profileTrigger/);
@@ -196,11 +225,27 @@ assert.match(appStyles, /\.chatMode/);
 assert.match(appStyles, /\.chatSidebar/);
 assert.match(appStyles, /\.chatHistory/);
 assert.match(appStyles, /\.sidebarHandle/);
+assert.doesNotMatch(appStyles, /\.sidebarHandle\s*\{[^}]*position:\s*absolute/s);
+assert.match(appStyles, /\.testHistory/);
 assert.match(appStyles, /\.composerRow/);
 assert.match(appStyles, /\.composerMascot/);
 assert.match(appStyles, /\.chatEmpty/);
 assert.match(appStyles, /\.chatMarkdown/);
 assert.match(appStyles, /\.chatSurface/);
+assert.match(profileSource, /id: "graph-memory"/);
+assert.match(profileSource, /\/api\/memory\/graph-items/);
+assert.match(profileSource, /className="memoryGraph"/);
+assert.match(profileSource, /markerEnd="url\(#memory-arrow\)"/);
+assert.match(profileSource, /Память пока пуста/);
+assert.match(profileSource, /Не удалось прочитать Graph Memory/);
+assert.doesNotMatch(profileSource, /Фактические связи, которые чатовая LLM передала backend-у и сохранила в граф\./);
+assert.doesNotMatch(profileSource, /существующий \/api\/personality/);
+assert.match(profileSource, /activityEvents/);
+assert.match(profileSource, /personalityWorkspace/);
+assert.match(appStyles, /\.memoryGraph/);
+assert.match(appStyles, /\.activityEvents/);
+assert.match(appStyles, /\.personalityWorkspace/);
+assert.doesNotMatch(appStyles, /\.graphMemoryCard/);
 assert.match(appStyles, /\.chatMessage/);
 assert.match(appStyles, /\.chatComposer/);
 assert.match(appStyles, /\.composerError/);
@@ -347,8 +392,12 @@ assert.match(serverSource, /test_failure/);
 assert.match(serverSource, /CREATE TABLE IF NOT EXISTS agent_events/);
 assert.match(serverSource, /CREATE TABLE IF NOT EXISTS learning_pipelines/);
 assert.match(serverSource, /CREATE TABLE IF NOT EXISTS memory_events/);
+assert.match(serverSource, /JOIN quiz_tests/);
 assert.match(serverSource, /memoryEvents/);
 assert.match(serverSource, /memoryEventKinds/);
+assert.doesNotMatch(serverSource, /memoryCandidateFromChatMessage/);
+assert.match(serverSource, /remember_context/);
+assert.match(serverSource, /assistantGenerated/);
 assert.match(serverSource, /memoryEventSources/);
 assert.match(serverSource, /invalid_memory_event_kind/);
 assert.match(serverSource, /invalid_memory_event_source/);
@@ -375,6 +424,8 @@ assert.match(serverSource, /missing_graph_memory_credentials/);
 assert.match(serverSource, /function graphMemoryError/);
 assert.match(serverSource, /empty_graph_memory_query/);
 assert.match(serverSource, /\/memory\/graph-health/);
+assert.match(serverSource, /\/api\/memory\/graph-items/);
+assert.match(serverSource, /\/memory\/items/);
 assert.match(serverSource, /\/memory\/events/);
 assert.match(serverSource, /\/memory\/search/);
 assert.match(serverSource, /invalid_memory_review_status/);
@@ -411,7 +462,8 @@ assert.match(serverSource, /parseSandboxResult/);
 assert.match(serverSource, /positiveNumber/);
 assert.match(serverSource, /body\.memory_mb/);
 assert.doesNotMatch(serverSource, /runLocalPython/);
-assert.doesNotMatch(serverSource, /node:child_process/);
+assert.match(serverSource, /spawn\("docker", runtimeComposeArgs/);
+assert.doesNotMatch(serverSource, /shell:\s*true/);
 assert.doesNotMatch(serverSource, /pythonBin/);
 
 const unsafeMarkdown = assistantMarkdownToHtml(`# Заголовок
@@ -425,11 +477,17 @@ const unsafeMarkdown = assistantMarkdownToHtml(`# Заголовок
 | --- | --- |
 | app.js | готов |
 
+> Важное замечание
+
+**жирный** и \`inline\`
+
 \`\`\`js
-const x = "<tag>";
+const answer = true;
 \`\`\`
 
-<script>alert(1)</script>`);
+<script>alert(1)</script>
+
+[unsafe](javascript:alert(1))`);
 assert.match(unsafeMarkdown, /<h3>Заголовок<\/h3>/);
 assert.match(unsafeMarkdown, /<li>пункт<\/li>/);
 assert.match(unsafeMarkdown, /<ol><li>первый<\/li><li>второй<\/li><\/ol>/);
@@ -437,8 +495,18 @@ assert.match(unsafeMarkdown, /<table>/);
 assert.match(unsafeMarkdown, /<th>Файл<\/th>/);
 assert.match(unsafeMarkdown, /<td>готов<\/td>/);
 assert.match(unsafeMarkdown, /data-language="js"/);
-assert.match(unsafeMarkdown, /&lt;tag&gt;/);
+assert.match(unsafeMarkdown, /<blockquote><p>Важное замечание<\/p><\/blockquote>/);
+assert.match(unsafeMarkdown, /<strong>жирный<\/strong>/);
+assert.match(unsafeMarkdown, /<span class="syntaxKeyword">const<\/span>/);
 assert.doesNotMatch(unsafeMarkdown, /<script>/);
+assert.doesNotMatch(unsafeMarkdown, /href="javascript:/);
+assert.match(appSource, /assistantMarkdownToHtml\(message\.content\)/);
+assert.match(appSource, /\/api\/tests\/.*\/attempts/);
+assert.match(appSource, /quizProgress/);
+assert.match(appSource, /className=\{`quizOption \$\{state\}`\}/);
+assert.match(appStyles, /\.quizOption\.correct/);
+assert.match(appStyles, /\.quizOption\.incorrect/);
+assert.match(appSource, /Правильно/);
 
 const mascotPrompt = buildMascotAssistantPrompt("Что дальше?", { route: "workspace", task: { id: "fill-and-flag" } });
 assert.match(mascotPrompt, /# Контекст страницы/);
@@ -462,10 +530,11 @@ assert.match(packageSource, /"react"/);
 assert.match(packageSource, /"@vitejs\/plugin-react"/);
 assert.doesNotMatch(packageSource, /"d3-delaunay"|"gsap"|"three"|"@react-three\/fiber"|"@react-three\/drei"/);
 assert.match(packageSource, /"server": "node server\.mjs"/);
+assert.match(packageSource, /"start": "npm run runtime:all && node server\.mjs"/);
 assert.match(packageSource, /"runtime:workspace": "docker compose -f docker-compose\.workspace\.yml up code-server openhands"/);
 assert.match(packageSource, /"runtime:project": "test -n \\".*CODELEARN_PROJECT_ID.*CODELEARN_WORKSPACE_MOUNT/);
 assert.match(packageSource, /"runtime:memory": "docker compose -f docker-compose\.workspace\.yml up falkordb graph-memory"/);
-assert.match(packageSource, /"runtime:all": "docker compose -f docker-compose\.workspace\.yml up code-server openhands falkordb graph-memory"/);
+assert.match(packageSource, /"runtime:all": "docker compose -f docker-compose\.workspace\.yml up -d --build code-server openhands falkordb graph-memory"/);
 assert.match(packageSource, /"runtime:down": "docker compose -f docker-compose\.workspace\.yml down"/);
 assert.match(packageSource, /python3 tests\/memory-service-check\.py/);
 
@@ -524,14 +593,12 @@ assert.match(envExampleSource, /^OPENHANDS_PORT=3000$/m);
 assert.match(envExampleSource, /^FALKORDB_PORT=6379$/m);
 assert.match(envExampleSource, /^GRAPH_MEMORY_PORT=8008$/m);
 assert.match(envExampleSource, /^GRAPH_MEMORY_URL=http:\/\/127\.0\.0\.1:8008$/m);
-assert.match(envExampleSource, /^GRAPHITI_LLM_PROVIDER=auto$/m);
-assert.match(envExampleSource, /^GRAPHITI_STRUCTURED_OUTPUT_MODE=json_object$/m);
-assert.match(envExampleSource, /^YANDEX_GRAPHITI_MODEL=$/m);
-assert.match(envExampleSource, /^YANDEX_GRAPHITI_SMALL_MODEL=$/m);
-assert.match(envExampleSource, /^YANDEX_GRAPHITI_EMBEDDING_URL=https:\/\/llm\.api\.cloud\.yandex\.net\/foundationModels\/v1\/textEmbedding$/m);
-assert.match(envExampleSource, /^YANDEX_GRAPHITI_EMBEDDING_MODEL=$/m);
-assert.match(envExampleSource, /^YANDEX_GRAPHITI_EMBEDDING_DIM=256$/m);
-assert.match(envExampleSource, /^YANDEX_GRAPHITI_MAX_TOKENS=4096$/m);
+assert.match(envExampleSource, /^GRAPH_EMBEDDING_PROVIDER=openrouter$/m);
+assert.match(envExampleSource, /^GRAPH_EMBEDDING_BASE_URL=https:\/\/openrouter\.ai\/api\/v1$/m);
+assert.match(envExampleSource, /^GRAPH_EMBEDDING_MODEL=openai\/text-embedding-3-small$/m);
+assert.match(envExampleSource, /^GRAPH_EMBEDDING_DIM=1536$/m);
+assert.doesNotMatch(envExampleSource, /GRAPHITI_LLM|GRAPHITI_SMALL_MODEL|YANDEX_GRAPHITI_MODEL/);
+assert.match(envExampleSource, /^GRAPH_OPENROUTER_API_KEY=$/m);
 
 const workspaceComposeSource = readFileSync(new URL("../docker-compose.workspace.yml", import.meta.url), "utf8");
 assert.match(workspaceComposeSource, /codercom\/code-server/);
@@ -542,15 +609,15 @@ assert.match(workspaceComposeSource, /memory_service\/Dockerfile/);
 assert.match(workspaceComposeSource, /FALKORDB_HOST: falkordb/);
 assert.match(workspaceComposeSource, /OPENAI_API_KEY: "\$\{OPENAI_API_KEY:-\}"/);
 assert.match(workspaceComposeSource, /OPENAI_ADMIN_KEY: "\$\{OPENAI_ADMIN_KEY:-\}"/);
-assert.match(workspaceComposeSource, /GRAPHITI_LLM_PROVIDER: "\$\{GRAPHITI_LLM_PROVIDER:-auto\}"/);
-assert.match(workspaceComposeSource, /GRAPHITI_STRUCTURED_OUTPUT_MODE: "\$\{GRAPHITI_STRUCTURED_OUTPUT_MODE:-json_object\}"/);
+assert.match(workspaceComposeSource, /OPENROUTER_API_KEY: "\$\{OPENROUTER_API_KEY:-\}"/);
+assert.match(workspaceComposeSource, /GRAPH_OPENROUTER_API_KEY: "\$\{GRAPH_OPENROUTER_API_KEY:-\}"/);
+assert.match(workspaceComposeSource, /GRAPH_EMBEDDING_PROVIDER: "\$\{GRAPH_EMBEDDING_PROVIDER:-auto\}"/);
+assert.match(workspaceComposeSource, /GRAPH_EMBEDDING_BASE_URL: "\$\{GRAPH_EMBEDDING_BASE_URL:-\}"/);
+assert.match(workspaceComposeSource, /GRAPH_EMBEDDING_MODEL: "\$\{GRAPH_EMBEDDING_MODEL:-\}"/);
+assert.match(workspaceComposeSource, /GRAPH_EMBEDDING_DIM: "\$\{GRAPH_EMBEDDING_DIM:-\}"/);
+assert.doesNotMatch(workspaceComposeSource, /GRAPHITI_LLM_PROVIDER|GRAPHITI_STRUCTURED_OUTPUT_MODE|GRAPHITI_LLM_MODEL/);
 assert.match(workspaceComposeSource, /YANDEX_AI_STUDIO_API_KEY: "\$\{YANDEX_AI_STUDIO_API_KEY:-\}"/);
 assert.match(workspaceComposeSource, /YANDEX_AI_STUDIO_FOLDER_ID: "\$\{YANDEX_AI_STUDIO_FOLDER_ID:-\}"/);
-assert.match(workspaceComposeSource, /YANDEX_AI_STUDIO_BASE_URL: "\$\{YANDEX_AI_STUDIO_BASE_URL:-https:\/\/ai\.api\.cloud\.yandex\.net\/v1\}"/);
-assert.match(workspaceComposeSource, /YANDEX_GRAPHITI_MODEL: "\$\{YANDEX_GRAPHITI_MODEL:-\}"/);
-assert.match(workspaceComposeSource, /YANDEX_GRAPHITI_EMBEDDING_URL: "\$\{YANDEX_GRAPHITI_EMBEDDING_URL:-https:\/\/llm\.api\.cloud\.yandex\.net\/foundationModels\/v1\/textEmbedding\}"/);
-assert.match(workspaceComposeSource, /YANDEX_GRAPHITI_EMBEDDING_DIM: "\$\{YANDEX_GRAPHITI_EMBEDDING_DIM:-256\}"/);
-assert.match(workspaceComposeSource, /YANDEX_GRAPHITI_MAX_TOKENS: "\$\{YANDEX_GRAPHITI_MAX_TOKENS:-4096\}"/);
 assert.match(workspaceComposeSource, /redis-cli", "ping"/);
 assert.match(workspaceComposeSource, /condition: service_healthy/);
 assert.match(workspaceComposeSource, /\$\{CODELEARN_WORKSPACE_MOUNT:-\.\/workspace\}:\$\{CODELEARN_WORKSPACE_CONTAINER_PATH:-\/workspaces\}/);
@@ -558,38 +625,42 @@ assert.match(workspaceComposeSource, /SANDBOX_WORKSPACE_BASE: "\$\{CODELEARN_WOR
 assert.doesNotMatch(workspaceComposeSource, /\.env/);
 
 const memoryServiceSource = readFileSync(new URL("../memory_service/service.py", import.meta.url), "utf8");
-assert.match(memoryServiceSource, /from graphiti_core import Graphiti/);
-assert.match(memoryServiceSource, /from graphiti_core\.driver\.falkordb_driver import FalkorDriver/);
-assert.match(memoryServiceSource, /OpenAIGenericClient/);
-assert.match(memoryServiceSource, /YandexOpenAIGenericClient/);
-assert.match(memoryServiceSource, /OpenAIEmbedder/);
-assert.match(memoryServiceSource, /YandexOpenAIEmbedder/);
+assert.match(memoryServiceSource, /from falkordb\.asyncio import FalkorDB/);
+assert.match(memoryServiceSource, /MEMORY_RELATION/);
+assert.match(memoryServiceSource, /vec\.cosineDistance/);
+assert.match(memoryServiceSource, /row_to_graph_item/);
+assert.match(memoryServiceSource, /\/memory\/items/);
 assert.match(memoryServiceSource, /yandex_text_embedding/);
 assert.match(memoryServiceSource, /foundationModels\/v1\/textEmbedding/);
-assert.match(memoryServiceSource, /OpenAIRerankerClient/);
 assert.match(memoryServiceSource, /AsyncOpenAI/);
-assert.match(memoryServiceSource, /deepseek-v4-flash/);
+assert.doesNotMatch(memoryServiceSource, /Graphiti|OpenAIGenericClient|Reranker|chat\.completions/);
+assert.match(memoryServiceSource, /https:\/\/openrouter\.ai\/api\/v1/);
+
+assert.match(profileSource, /graphEmbeddingProvider/);
+assert.match(profileSource, /graphEmbeddingModel/);
+assert.match(profileSource, /graphApiKey/);
+assert.doesNotMatch(profileSource, /graphLlmModel|Graph LLM model|Graph LLM base URL/);
+assert.match(profileSource, /\/api\/runtime\/start/);
+assert.match(serverSource, /\/api\/runtime\/start/);
+assert.match(serverSource, /invalid_runtime_start_request/);
+assert.match(serverSource, /code-server.*openhands.*falkordb.*graph-memory/s);
 assert.match(memoryServiceSource, /text-embeddings-v2-doc/);
 assert.match(memoryServiceSource, /YANDEX_AI_STUDIO_API_KEY/);
 assert.match(memoryServiceSource, /YANDEX_AI_STUDIO_FOLDER_ID/);
-assert.match(memoryServiceSource, /YANDEX_GRAPHITI_MAX_TOKENS/);
-assert.match(memoryServiceSource, /GRAPHITI_STRUCTURED_OUTPUT_MODE/);
-assert.match(memoryServiceSource, /source=episode_type\.json/);
-assert.match(memoryServiceSource, /group_id=episode\["group_id"\]/);
-assert.match(memoryServiceSource, /group_ids=\[group_id\]/);
 assert.match(memoryServiceSource, /health_status/);
 assert.match(memoryServiceSource, /run_async/);
 assert.match(memoryServiceSource, /run_until_complete/);
-assert.match(memoryServiceSource, /graphiti_unavailable/);
+assert.match(memoryServiceSource, /graph_memory_unavailable/);
 assert.match(memoryServiceSource, /missing_graph_memory_credentials/);
-assert.match(memoryServiceSource, /has_graphiti_credentials/);
-assert.match(memoryServiceSource, /graphiti_not_installed/);
+assert.match(memoryServiceSource, /has_embedding_credentials/);
 assert.match(memoryServiceSource, /bounded_limit/);
 assert.match(memoryServiceSource, /invalid_json/);
 assert.match(memoryServiceSource, /memory_event_too_large/);
 
 const memoryServiceRequirements = readFileSync(new URL("../memory_service/requirements.txt", import.meta.url), "utf8");
-assert.match(memoryServiceRequirements, /graphiti-core\[falkordb\]/);
+assert.match(memoryServiceRequirements, /^falkordb$/m);
+assert.match(memoryServiceRequirements, /^openai$/m);
+assert.doesNotMatch(memoryServiceRequirements, /graphiti/i);
 const memoryServiceDockerfile = readFileSync(new URL("../memory_service/Dockerfile", import.meta.url), "utf8");
 assert.match(memoryServiceDockerfile, /HEALTHCHECK/);
 assert.match(memoryServiceDockerfile, /\/live/);

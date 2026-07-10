@@ -34,6 +34,7 @@ export function assistantMarkdownToHtml(markdown) {
   let inCode = false;
   let codeLang = "";
   let code = [];
+  let quote = [];
 
   const flushParagraph = () => {
     if (!paragraph.length) return;
@@ -46,9 +47,15 @@ export function assistantMarkdownToHtml(markdown) {
     list = [];
   };
   const flushCode = () => {
-    html.push(`<pre class="mascotAssistantCode"><code data-language="${escapeAttr(codeLang)}">${escapeHtml(code.join("\n"))}</code></pre>`);
+    const language = normalizedCodeLanguage(codeLang);
+    html.push(`<pre class="mascotAssistantCode" data-language="${escapeAttr(language || "text")}"><code class="language-${escapeAttr(language || "text")}">${highlightCode(code.join("\n"), language)}</code></pre>`);
     code = [];
     codeLang = "";
+  };
+  const flushQuote = () => {
+    if (!quote.length) return;
+    html.push(`<blockquote><p>${inlineMarkdown(quote.join(" "))}</p></blockquote>`);
+    quote = [];
   };
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -60,6 +67,7 @@ export function assistantMarkdownToHtml(markdown) {
       } else {
         flushParagraph();
         flushList();
+        flushQuote();
         inCode = true;
         codeLang = line.slice(3).trim().split(/\s+/)[0] || "";
       }
@@ -72,6 +80,7 @@ export function assistantMarkdownToHtml(markdown) {
     if (!line.trim()) {
       flushParagraph();
       flushList();
+      flushQuote();
       continue;
     }
     const tableHeaders = markdownTableCells(line);
@@ -79,6 +88,7 @@ export function assistantMarkdownToHtml(markdown) {
     if (tableHeaders && tableDivider?.length === tableHeaders.length && tableDivider.every((cell) => /^:?-{3,}:?$/.test(cell))) {
       flushParagraph();
       flushList();
+      flushQuote();
       const rows = [];
       index += 2;
       while (index < lines.length) {
@@ -95,6 +105,7 @@ export function assistantMarkdownToHtml(markdown) {
     if (heading) {
       flushParagraph();
       flushList();
+      flushQuote();
       const level = heading[1].length + 2;
       html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
       continue;
@@ -109,12 +120,21 @@ export function assistantMarkdownToHtml(markdown) {
       list.push((ordered || bullet)[1]);
       continue;
     }
+    const quoted = line.match(/^\s*>\s?(.*)$/);
+    if (quoted) {
+      flushParagraph();
+      flushList();
+      quote.push(quoted[1]);
+      continue;
+    }
+    flushQuote();
     paragraph.push(line.trim());
   }
 
   if (inCode) flushCode();
   flushParagraph();
   flushList();
+  flushQuote();
   return html.join("") || "<p>Ответ пуст.</p>";
 }
 
@@ -367,10 +387,41 @@ function saveSettings() {
 }
 
 function inlineMarkdown(value) {
-  const escaped = escapeHtml(value);
+  const code = [];
+  const escaped = escapeHtml(value).replace(/`([^`]+)`/g, (_match, content) => {
+    code.push(`<code>${content}</code>`);
+    return `\u0000CODE${code.length - 1}\u0000`;
+  });
   return escaped
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|\s)\*([^*]+)\*(?=\s|$)/g, "$1<em>$2</em>")
+    .replace(/\u0000CODE(\d+)\u0000/g, (_match, index) => code[Number(index)] || "");
+}
+
+function normalizedCodeLanguage(language) {
+  const value = String(language || "").toLowerCase();
+  return ({ javascript: "js", typescript: "ts", python: "py", shell: "bash", sh: "bash" })[value] || value.replace(/[^a-z0-9_+-]/g, "").slice(0, 24);
+}
+
+function highlightCode(value, language) {
+  const source = String(value || "");
+  const keywords = language === "py"
+    ? "and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|not|or|pass|raise|return|True|try|while|with|yield"
+    : language === "bash"
+      ? "case|do|done|elif|else|esac|export|fi|for|function|if|in|local|then|while"
+      : "async|await|break|case|catch|class|const|continue|debugger|default|delete|do|else|export|extends|false|finally|for|from|function|if|import|in|instanceof|let|new|null|of|return|static|super|switch|this|throw|true|try|typeof|undefined|var|void|while|yield";
+  const comments = language === "py" || language === "bash" ? "#[^\\n]*" : "\\/\\*[\\s\\S]*?\\*\\/|\\/\\/[^\\n]*";
+  const pattern = new RegExp(`(${comments})|("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|\`(?:\\\\.|[^\`\\\\])*\`)|(\\b(?:${keywords})\\b)|(\\b\\d+(?:\\.\\d+)?\\b)`, "g");
+  let html = "";
+  let offset = 0;
+  for (const match of source.matchAll(pattern)) {
+    html += escapeHtml(source.slice(offset, match.index));
+    const className = match[1] ? "syntaxComment" : match[2] ? "syntaxString" : match[3] ? "syntaxKeyword" : "syntaxNumber";
+    html += `<span class="${className}">${escapeHtml(match[0])}</span>`;
+    offset = match.index + match[0].length;
+  }
+  return html + escapeHtml(source.slice(offset));
 }
 
 function injectMascotAssistantStyles() {
@@ -400,9 +451,10 @@ function injectMascotAssistantStyles() {
     .mascotAssistantMessage p,.mascotAssistantMessage ul,.mascotAssistantMessage h3,.mascotAssistantMessage h4,.mascotAssistantMessage h5{margin:0 0 8px}
     .mascotAssistantMessage p:last-child,.mascotAssistantMessage ul:last-child,.mascotAssistantMessage h3:last-child,.mascotAssistantMessage h4:last-child,.mascotAssistantMessage h5:last-child{margin-bottom:0}
     .mascotAssistantMessage ul{padding-left:20px}
+    .mascotAssistantMessage blockquote{margin:8px 0;padding-left:10px;border-left:2px solid var(--fire);color:var(--muted)}
     .mascotAssistantMessage code{padding:1px 4px;border-radius:5px;background:rgba(0,0,0,.08)}
     .mascotAssistantCode{margin:8px 0 0;padding:10px;border-radius:8px;background:#0d1117;color:#f8fafc;white-space:pre;overflow:auto}
-    .mascotAssistantCode code{padding:0;background:transparent;color:inherit}
+    .mascotAssistantCode code{padding:0;background:transparent;color:inherit}.syntaxKeyword{color:#c4b5fd}.syntaxString{color:#f9cc73}.syntaxNumber{color:#f4ed36}.syntaxComment{color:#94a3b8;font-style:italic}
     .mascotAssistantEmpty,.mascotAssistantError{padding:12px;border-radius:8px;background:var(--soft);color:var(--muted)}
     .mascotAssistantError{background:var(--red-soft);color:var(--red)}
     .mascotAssistantForm{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:14px;border-top:1px solid var(--line)}

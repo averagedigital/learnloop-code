@@ -12,7 +12,8 @@ function activityTimestamps(app) {
   return [
     ...(app?.taskLogs || []).map((item) => item.updatedAt),
     ...(app?.assistantChats || []).flatMap((chat) => (chat.messages || []).map((message) => message.createdAt)),
-    ...(app?.memoryEvents || []).map((item) => item.createdAt)
+    ...(app?.memoryEvents || []).map((item) => item.createdAt),
+    ...(app?.quizAttempts || []).map((item) => item.createdAt)
   ].filter(Boolean);
 }
 
@@ -44,6 +45,59 @@ export function buildActivityCalendar(app, requestedWeeks = 52, now = new Date()
     total: visibleCells.reduce((sum, cell) => sum + cell.count, 0),
     activeDays: visibleCells.filter((cell) => cell.count > 0).length
   };
+}
+
+export function buildActivityEvents(app, requestedLimit = 8) {
+  const limit = Math.max(1, Math.min(20, Number(requestedLimit) || 8));
+  const quizEvents = (app?.quizAttempts || []).map((attempt) => ({
+    id: attempt.id,
+    type: "quiz",
+    title: "Пройден тест",
+    detail: attempt.topic || "Тест",
+    value: `${attempt.correctCount}/${attempt.totalCount} баллов`,
+    createdAt: attempt.createdAt
+  }));
+  const memoryEvents = (app?.memoryEvents || []).filter((event) => event.reviewStatus === "accepted").map((event) => ({
+    id: event.id,
+    type: "memory",
+    title: "Память обновлена",
+    detail: event.text,
+    value: "Graph",
+    createdAt: event.createdAt
+  }));
+  const taskEvents = (app?.taskLogs || []).map((event) => ({
+    id: event.id,
+    type: "task",
+    title: "Событие задачи",
+    detail: event.label || "Задача обновлена",
+    value: event.status || "activity",
+    createdAt: event.updatedAt
+  }));
+  return [...quizEvents, ...memoryEvents, ...taskEvents]
+    .filter((event) => event.id && dateKey(event.createdAt))
+    .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt))
+    .slice(0, limit);
+}
+
+export function buildMemoryGraph(items, requestedEdges = 16) {
+  const limit = Math.max(1, Math.min(24, Number(requestedEdges) || 16));
+  const sourceEdges = (items || []).filter((item) => item?.subject && item?.object).slice(0, limit);
+  const degrees = new Map();
+  for (const edge of sourceEdges) {
+    degrees.set(edge.subject, (degrees.get(edge.subject) || 0) + 1);
+    degrees.set(edge.object, (degrees.get(edge.object) || 0) + 1);
+  }
+  const ids = [...degrees].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).map(([id]) => id);
+  const restCount = Math.max(0, ids.length - 1);
+  const nodes = ids.map((id, index) => {
+    if (index === 0) return { id, x: 480, y: 260, degree: degrees.get(id) };
+    if (restCount <= 4) return { id, x: 770, y: 90 + index * (340 / (restCount + 1)), degree: degrees.get(id) };
+    const angle = -Math.PI / 2 + ((index - 1) / restCount) * Math.PI * 2;
+    return { id, x: 480 + Math.cos(angle) * 330, y: 260 + Math.sin(angle) * 190, degree: degrees.get(id) };
+  });
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const edges = sourceEdges.map((edge, index) => ({ ...edge, index, from: byId.get(edge.subject), to: byId.get(edge.object) }));
+  return { nodes, edges };
 }
 
 export function profileAvatarSrc(mascotId) {
