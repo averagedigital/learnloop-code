@@ -227,6 +227,8 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
   const [models, setModels] = useState([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [personality, setPersonality] = useState("");
+  const [savedPersonality, setSavedPersonality] = useState("");
+  const [personalityLoaded, setPersonalityLoaded] = useState(false);
   const [graphMemory, setGraphMemory] = useState({ loading: false, error: "", items: [], groups: [] });
   const [graphRefreshKey, setGraphRefreshKey] = useState(0);
   const [notice, setNotice] = useState({ type: "", text: "" });
@@ -262,11 +264,16 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || personalityLoaded) return;
     let cancelled = false;
     requestJson("/api/personality")
       .then((data) => {
-        if (!cancelled) setPersonality(data.markdown || "");
+        if (!cancelled) {
+          const markdown = data.markdown || "";
+          setPersonality(markdown);
+          setSavedPersonality(markdown);
+          setPersonalityLoaded(true);
+        }
       })
       .catch((error) => {
         if (!cancelled) setNotice({ type: "error", text: error.message });
@@ -274,7 +281,7 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
     return () => {
       cancelled = true;
     };
-  }, [open, requestJson]);
+  }, [open, personalityLoaded, requestJson]);
 
   useEffect(() => {
     if (!open || section !== "graph-memory") return;
@@ -299,6 +306,7 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
   const providerStatus = app?.providerStatus?.[form.providerId];
   const taskLogs = app?.taskLogs || [];
   const latestQuizAttempt = app?.quizAttempts?.[0];
+  const personalityDirty = personality !== savedPersonality;
   const visibleSections = sections.filter((item) => `${item.label} ${item.hint}`.toLowerCase().includes(search.trim().toLowerCase()));
 
   function change(key, value) {
@@ -460,6 +468,7 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ markdown: personality })
       });
+      setSavedPersonality(personality);
       setNotice({ type: "success", text: "Персонализация сохранена." });
     } catch (error) {
       setNotice({ type: "error", text: error.message });
@@ -643,16 +652,13 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
             {section === "personalization" ? (
               <form className="profileSection personalityForm" onSubmit={savePersonality}>
                 <div className="personalityWorkspace">
-                  <aside className="personalityGuide">
-                    <p>PERSONALITY.MD</p>
-                    <h3>Память куратора</h3>
-                    <span>Устойчивый контекст, который задаёт стиль помощи и учебный фокус.</span>
-                    <ul><li>Кодовые привычки</li><li>Проблемные темы</li><li>Сильные стороны</li><li>Предпочтения в ответах</li></ul>
-                  </aside>
                   <div className="personalityEditor">
-                    <header><strong>Контекст куратора</strong><span>Markdown · local</span></header>
-                    <textarea aria-label="Контекст куратора" value={personality} onChange={(event) => setPersonality(event.target.value)} rows="18" />
-                    <footer><span>{personality.length} символов</span><button className="settingsSave" type="submit" disabled={saving}>Сохранить</button></footer>
+                    <header>
+                      <div><strong>Ваш контекст для куратора</strong><span id="personality-hint">Свободный Markdown: структура и порядок разделов остаются вашими.</span></div>
+                      <b>{personalityDirty ? "Не сохранено" : "Сохранено"}</b>
+                    </header>
+                    <textarea aria-label="Контекст куратора" aria-describedby="personality-hint" value={personality} onChange={(event) => setPersonality(event.target.value)} rows="18" maxLength="100000" />
+                    <footer><span>{personality.length} / 100 000 символов</span><button className="settingsSave" type="submit" disabled={saving || !personalityDirty}>{saving ? "Сохраняю…" : "Сохранить"}</button></footer>
                   </div>
                 </div>
               </form>

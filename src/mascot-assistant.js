@@ -393,6 +393,7 @@ function inlineMarkdown(value) {
     return `\u0000CODE${code.length - 1}\u0000`;
   });
   return escaped
+    .replace(/==(.+?)==/g, "<mark>$1</mark>")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|\s)\*([^*]+)\*(?=\s|$)/g, "$1<em>$2</em>")

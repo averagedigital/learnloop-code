@@ -90,7 +90,7 @@ function CanvasNeuralFlow() {
           context.moveTo(a.x, a.y);
           context.quadraticCurveTo((a.x + b.x) / 2, (a.y + b.y) / 2 + bend, b.x, b.y);
           context.strokeStyle = `rgba(249, 204, 115, ${alpha})`;
-          context.lineWidth = 0.45;
+          context.lineWidth = 0.65;
           context.stroke();
         }
       }
@@ -107,7 +107,7 @@ function CanvasNeuralFlow() {
         context.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
       }
       context.strokeStyle = `rgba(249, 204, 115, ${0.1 + particle.radius * 0.075})`;
-      context.lineWidth = 0.45 + particle.radius * 0.32;
+      context.lineWidth = 0.65 + particle.radius * 0.32;
       context.stroke();
     }
 

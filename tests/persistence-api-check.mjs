@@ -57,6 +57,31 @@ try {
   assert.equal(initialRuntimeHealth.workspace.ok, true);
   assert.equal(initialRuntimeHealth.agent.ok, true);
   assert.equal(initialRuntimeHealth.graph.ok, true);
+  const unicodePersonality = "# Мой контекст\n\nПиши примеры на Rust 🦀.\n\n## 自由な構造\nПорядок разделов важен.";
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/personality`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ markdown: unicodePersonality })
+  })).status, 200);
+  assert.equal((await fetchJson(`http://127.0.0.1:${port}/api/personality`)).markdown, unicodePersonality);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/personality`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ markdown: "" })
+  })).status, 200);
+  assert.equal((await fetchJson(`http://127.0.0.1:${port}/api/personality`)).markdown, "");
+  const maximumPersonality = "Ж".repeat(100000);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/personality`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ markdown: maximumPersonality })
+  })).status, 200);
+  assert.equal((await fetchJson(`http://127.0.0.1:${port}/api/personality`)).markdown, maximumPersonality);
+  await fetch(`http://127.0.0.1:${port}/api/personality`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ markdown: unicodePersonality })
+  });
   const hugePersonality = await fetch(`http://127.0.0.1:${port}/api/personality`, {
     method: "POST",
     headers: { "content-type": "application/json" },

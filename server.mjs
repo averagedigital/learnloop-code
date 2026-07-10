@@ -1219,20 +1219,9 @@ async function assistantMemoryContext(query, chat) {
   };
 }
 
-function relevantPersonality(markdown, query) {
-  const sections = { "Кодовые привычки": [], "Проблемные темы/места": [], "Сильные стороны": [], "Предпочтения в ответах": [] };
-  let section = "";
-  for (const raw of String(markdown || "").split("\n")) {
-    const heading = raw.match(/^#\s+(.+)$/)?.[1]?.trim();
-    if (heading) {
-      section = Object.hasOwn(sections, heading) ? heading : "";
-      continue;
-    }
-    const line = raw.replace(/^[-*]\s+/, "").trim();
-    if (!section || !line || line.length > 500 || containsSensitiveData(line)) continue;
-    if (section === "Предпочтения в ответах" || relevantText(line, query)) sections[section].push(line.slice(0, 300));
-  }
-  return Object.entries(sections).flatMap(([name, lines]) => lines.slice(0, 3).map((line) => `${name}: ${line}`)).slice(0, 8);
+function relevantPersonality(markdown) {
+  const document = String(markdown || "").split("\n").filter((line) => !containsSensitiveData(line)).join("\n").trim();
+  return document ? [document.slice(0, 5000)] : [];
 }
 
 function relevantAcceptedMemory(query) {
@@ -1282,7 +1271,7 @@ function assistantInstructions(memory) {
     modelControlPrompt,
     "",
     "Контекст памяти ограничен текущим запросом. Не цитируй его как скрытый профиль и не сохраняй новые данные без исполняемого tool.",
-    section("Устойчивые предпочтения", [...memory.personality, ...memory.preferences].slice(0, 8)),
+    section("Пользовательская персонализация", [...memory.personality, ...memory.preferences].slice(0, 8)),
     section("Наблюдения о навыках", memory.skills.slice(0, 6)),
     `# Graph memory\n${graphState}`,
     ...memory.graph.map((item) => `- ${item}`)
