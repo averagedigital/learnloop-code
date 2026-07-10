@@ -100,7 +100,7 @@ async def health_status():
         if not has_embedding_credentials():
             raise GraphMemoryConfigError("missing_graph_memory_credentials")
         graph = await graph_client()
-        await graph.ro_query("RETURN 1")
+        await graph.query("RETURN 1")
     except GraphMemoryConfigError as exc:
         return 503, {"ok": False, "service": "codelearn-graph-memory", "ready": False, "error": str(exc)}
     except Exception as exc:

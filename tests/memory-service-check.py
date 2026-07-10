@@ -96,6 +96,9 @@ class FakeGraph:
         self.error = error
 
     async def ro_query(self, _query, _params=None):
+        raise AssertionError("health probe must initialize an empty graph with query")
+
+    async def query(self, _query, _params=None):
         if self.error:
             raise self.error
         return object()

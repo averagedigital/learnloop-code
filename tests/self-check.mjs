@@ -725,7 +725,7 @@ assert.match(envExampleSource, /^GRAPH_OPENROUTER_API_KEY=$/m);
 const workspaceComposeSource = readFileSync(new URL("../docker-compose.workspace.yml", import.meta.url), "utf8");
 assert.match(workspaceComposeSource, /codercom\/code-server/);
 assert.match(workspaceComposeSource, /ghcr\.io\/all-hands-ai\/openhands/);
-assert.match(workspaceComposeSource, /falkordb\/falkordb/);
+assert.match(workspaceComposeSource, /falkordb\/falkordb-server:latest/);
 assert.match(workspaceComposeSource, /graph-memory/);
 assert.match(workspaceComposeSource, /memory_service\/Dockerfile/);
 assert.match(workspaceComposeSource, /FALKORDB_HOST: falkordb/);

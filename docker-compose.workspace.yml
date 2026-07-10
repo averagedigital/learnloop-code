@@ -23,7 +23,7 @@ services:
       LLM_BASE_URL: "${YANDEX_AI_STUDIO_BASE_URL:-https://ai.api.cloud.yandex.net/v1}"
 
   falkordb:
-    image: falkordb/falkordb:latest
+    image: falkordb/falkordb-server:latest
     ports:
       - "${FALKORDB_PORT:-6379}:6379"
     volumes:
