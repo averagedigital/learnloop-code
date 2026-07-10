@@ -22,6 +22,59 @@ async function requestJson(url, options) {
   return data;
 }
 
+async function requestAssistantStream(chatId, signal, onEvent) {
+  const response = await fetch("/api/assistant/respond/stream", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify({ chatId }),
+    signal
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(`Backend вернул невалидный ответ (${response.status}).`);
+    }
+    throw new Error(data.message || data.error || `Backend ответил ${response.status}.`);
+  }
+  if (!/^text\/event-stream/i.test(response.headers.get("content-type") || "") || !response.body) {
+    throw new Error("Backend не открыл поток ответа.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let completed = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let separator = buffer.match(/\r?\n\r?\n/);
+    while (separator) {
+      const frame = buffer.slice(0, separator.index);
+      buffer = buffer.slice(separator.index + separator[0].length);
+      const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart()).join("\n");
+      if (data) {
+        let event;
+        try {
+          event = JSON.parse(data);
+        } catch {
+          throw new Error("Backend вернул повреждённое событие потока.");
+        }
+        if (event.type === "error") throw new Error(event.message || event.error || "Provider stream failed.");
+        onEvent(event);
+        if (event.type === "complete") completed = event;
+      }
+      separator = buffer.match(/\r?\n\r?\n/);
+    }
+    if (done) break;
+  }
+  if (!completed) throw new Error("Поток завершился без финального ответа.");
+  return completed;
+}
+
 function currentRoute() {
   const hash = decodeURIComponent(window.location.hash.slice(1));
   if (hash === "chat") return { tab: "chat", testId: "" };
@@ -285,6 +338,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const composerRef = useRef(null);
   const threadEndRef = useRef(null);
+  const activeRequestRef = useRef(null);
 
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return undefined;
@@ -411,6 +465,11 @@ export default function App() {
     setComposerError("");
     setSending(true);
 
+    const streamId = `stream-${Date.now()}`;
+    let streamedMessage = { role: "assistant", content: "", reasoning: "", streaming: true, createdAt: streamId };
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
+
     try {
       let id = chatId;
       let createdChat = null;
@@ -432,10 +491,18 @@ export default function App() {
       });
       updateChatHistory(id, nextMessages, createdChat);
 
-      const result = await requestJson("/api/assistant/respond", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chatId: id })
+      setMessages([...nextMessages, streamedMessage]);
+      const result = await requestAssistantStream(id, controller.signal, (streamEvent) => {
+        if (streamEvent.type === "text_delta") {
+          streamedMessage = { ...streamedMessage, content: `${streamedMessage.content}${streamEvent.delta}` };
+          setMessages([...nextMessages, streamedMessage]);
+        } else if (streamEvent.type === "reasoning_delta") {
+          streamedMessage = { ...streamedMessage, reasoning: `${streamedMessage.reasoning}${streamEvent.delta}` };
+          setMessages([...nextMessages, streamedMessage]);
+        } else if (streamEvent.type === "complete") {
+          streamedMessage = streamEvent.message;
+          setMessages([...nextMessages, streamEvent.message]);
+        }
       });
       const completedMessages = [...nextMessages, result.message];
       setMessages(completedMessages);
@@ -451,10 +518,21 @@ export default function App() {
       if (result.providerError) setComposerError("Provider не завершил финальный ответ; созданный тест сохранён и доступен.");
       else if (result.toolErrors?.length) setComposerError(`Инструмент не выполнил действие: ${result.toolErrors[0].error}`);
     } catch (error) {
-      setComposerError(error.message || "Не удалось получить ответ куратора.");
+      const partial = streamedMessage.content || streamedMessage.reasoning
+        ? { ...streamedMessage, streaming: false, interrupted: true }
+        : null;
+      setMessages(partial ? [...nextMessages, partial] : nextMessages);
+      setComposerError(error.name === "AbortError"
+        ? "Ответ остановлен. Частичный текст не сохранён в истории."
+        : error.message || "Не удалось получить ответ куратора.");
     } finally {
+      if (activeRequestRef.current === controller) activeRequestRef.current = null;
       setSending(false);
     }
+  }
+
+  function cancelResponse() {
+    activeRequestRef.current?.abort();
   }
 
   function handleComposerKeyDown(event) {
@@ -590,16 +668,17 @@ export default function App() {
           ) : messages.map((message, index) => (
             <article className={`chatMessage ${message.role}`} key={message.createdAt || `${message.role}-${index}`}>
               <span className="messageAuthor">{message.role === "assistant" ? "Куратор" : message.role === "system" ? "Система" : "Вы"}</span>
-              <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.content) }} />
+              {message.reasoning ? (
+                <details className="reasoningDisclosure">
+                  <summary>Краткое обоснование</summary>
+                  <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.reasoning) }} />
+                </details>
+              ) : null}
+              {message.content ? <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.content) }} /> : message.streaming ? <p className="streamWaiting"><span className="thinkingDot" />Обдумываю ответ</p> : null}
+              {message.interrupted ? <span className="streamInterrupted">Ответ прерван · не сохранён</span> : null}
               {message.action?.type === "open_test" ? <button className="messageAction" type="button" onClick={() => openTest(message.action.targetId)}>{message.action.label}</button> : null}
             </article>
           ))}
-          {sending ? (
-            <article className="chatMessage assistant pending">
-              <span className="messageAuthor">Куратор</span>
-              <p><span className="thinkingDot" />Обдумываю ответ</p>
-            </article>
-          ) : null}
           {toolState.error ? <p className="backendError" role="alert">Не удалось загрузить чат: {toolState.error}</p> : null}
           <div ref={threadEndRef} />
         </div>
@@ -623,8 +702,8 @@ export default function App() {
                   placeholder="Спроси о коде…"
                   disabled={sending || toolState.loading}
                 />
-                <button type="submit" disabled={sending || toolState.loading || !draft.trim()} aria-label="Отправить сообщение">
-                  {sending ? "…" : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 17 10-10M8 7h9v9" /></svg>}
+                <button type={sending ? "button" : "submit"} onClick={sending ? cancelResponse : undefined} disabled={toolState.loading || (!sending && !draft.trim())} aria-label={sending ? "Остановить ответ" : "Отправить сообщение"}>
+                  {sending ? <span className="stopStreamIcon" aria-hidden="true" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 17 10-10M8 7h9v9" /></svg>}
                 </button>
               </form>
               <p className="composerHint">Enter — отправить · Shift + Enter — новая строка</p>

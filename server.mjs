@@ -57,6 +57,14 @@ class InvalidJsonError extends Error {
   }
 }
 
+class ProviderStreamError extends Error {
+  constructor(code, message = code) {
+    super(message);
+    this.name = "ProviderStreamError";
+    this.code = code;
+  }
+}
+
 await initDatabase();
 
 createServer(async (req, res) => {
@@ -80,6 +88,7 @@ createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/api/memory/graph-search") return await graphMemorySearch(req, res);
     if (url.pathname === "/api/assistant/chats") return await assistantChats(req, res);
     if (req.method === "POST" && url.pathname.startsWith("/api/assistant/chats/") && url.pathname.endsWith("/messages")) return await assistantChatMessage(req, res, url);
+    if (req.method === "POST" && url.pathname === "/api/assistant/respond/stream") return await assistantRespondStream(req, res);
     if (req.method === "POST" && url.pathname === "/api/assistant/respond") return await assistantRespond(req, res);
     if (req.method === "GET" && url.pathname === "/api/tests") return await quizTests(req, res);
     if (req.method === "POST" && url.pathname.startsWith("/api/tests/") && url.pathname.endsWith("/attempts")) return await quizAttempt(req, res, url);
@@ -215,6 +224,7 @@ async function initDatabase() {
       role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
       content TEXT NOT NULL,
       action TEXT NOT NULL DEFAULT '',
+      reasoning TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS quiz_tests (
@@ -247,6 +257,9 @@ async function initDatabase() {
   `);
   if (!db.prepare("PRAGMA table_info(assistant_messages)").all().some((column) => column.name === "action")) {
     db.exec("ALTER TABLE assistant_messages ADD COLUMN action TEXT NOT NULL DEFAULT ''");
+  }
+  if (!db.prepare("PRAGMA table_info(assistant_messages)").all().some((column) => column.name === "reasoning")) {
+    db.exec("ALTER TABLE assistant_messages ADD COLUMN reasoning TEXT NOT NULL DEFAULT ''");
   }
 
   if (process.env.CODELEARN_SEED_DEV_DATA === "true" && scalar("SELECT COUNT(*) FROM lessons") === 0) {
@@ -1174,7 +1187,8 @@ async function assistantRespond(req, res) {
 
   const content = successfulTest ? testCreatedChatMessage(successfulTest.test) : assistantResponseText(finalData).trim();
   if (!content) return sendJson(res, 502, { error: "empty_provider_response", memory: memory.status });
-  const message = persistAssistantMessage(chat.id, "assistant", content, action);
+  const reasoning = successfulTest ? "" : assistantReasoningText(finalData).trim();
+  const message = persistAssistantMessage(chat.id, "assistant", content, action, reasoning);
   sendJson(res, 200, {
     ok: true,
     message,
@@ -1186,12 +1200,155 @@ async function assistantRespond(req, res) {
   });
 }
 
-function persistAssistantMessage(chatId, role, content, action) {
+async function assistantRespondStream(req, res) {
+  const { chatId } = await readJson(req);
+  const chat = db.prepare("SELECT id, project_id AS projectId, task_id AS taskId FROM assistant_chats WHERE id = ?").get(String(chatId || ""));
+  if (!chat) return sendJson(res, 404, { error: "chat_not_found" });
+  const history = boundedChatMessages(chat.id);
+  const latestUser = [...history].reverse().find((message) => message.role === "user");
+  if (!latestUser) return sendJson(res, 400, { error: "missing_user_message" });
+
+  const providerId = readSetting("providerId") || "openrouter";
+  const provider = providers.find((item) => item.id === providerId);
+  const model = readSetting("providerModel").trim();
+  const baseUrl = httpServiceUrl(readSetting("providerBaseUrl") || provider?.baseUrl);
+  const apiKey = provider ? process.env[provider.apiKeyEnv] : "";
+  if (!provider || !model || !baseUrl || !apiKey) return sendJson(res, 400, { error: "provider_not_configured" });
+
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
+  res.once("close", () => {
+    if (!res.writableEnded) controller.abort();
+  });
+  const memory = await assistantMemoryContext(latestUser.content, chat);
+  if (controller.signal.aborted) return;
+  const instructions = assistantInstructions(memory);
+  const tools = toolsForProvider(provider.mode);
+  startAssistantStream(res);
+
+  const emit = (event) => sendAssistantEvent(res, event);
+  let successfulTest = null;
+  let memoryWrites = [];
+  let action = null;
+  let outputs = [];
+  try {
+    const initial = await requestProviderStream(provider, baseUrl, apiKey, {
+      model,
+      instructions,
+      history,
+      tools,
+      signal: controller.signal,
+      onDelta: emit
+    });
+    const calls = initial.calls;
+    let content = initial.content;
+    let reasoning = initial.reasoning;
+
+    if (calls.length) {
+      const seenTools = new Set();
+      for (const [index, call] of calls.entries()) {
+        if (index >= 3) outputs.push({ ok: false, error: "too_many_tool_calls" });
+        else if (seenTools.has(call.name)) outputs.push({ ok: false, error: "duplicate_tool_call" });
+        else {
+          seenTools.add(call.name);
+          outputs.push(await executeAssistantTool(call, chat));
+        }
+      }
+      successfulTest = outputs.find((output) => output.ok && output.test) || null;
+      memoryWrites = outputs.filter((output) => output.ok && output.memory);
+      action = successfulTest ? { type: "open_test", targetId: successfulTest.test.id, label: "Открыть в тестах" } : null;
+
+      const continued = await continueProviderStream(provider, baseUrl, apiKey, {
+        model,
+        instructions,
+        history,
+        tools,
+        initial: initial.data,
+        calls,
+        outputs,
+        signal: controller.signal,
+        onDelta: successfulTest ? () => {} : emit
+      });
+      if (successfulTest) {
+        content = testCreatedChatMessage(successfulTest.test);
+        reasoning = "";
+        emit({ type: "text_delta", delta: content });
+      } else {
+        content += continued.content;
+        reasoning += continued.reasoning;
+      }
+    }
+
+    content = content.trim();
+    reasoning = reasoning.trim();
+    if (!content) throw new ProviderStreamError("empty_provider_response");
+    const message = persistAssistantMessage(chat.id, "assistant", content, action, reasoning);
+    emit({
+      type: "complete",
+      ok: true,
+      message,
+      action,
+      test: successfulTest?.test || null,
+      memoryWrites,
+      toolErrors: outputs.filter((output) => !output.ok),
+      memory: memory.status
+    });
+    res.end();
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === "AbortError") {
+      if (successfulTest || memoryWrites.length) persistToolSideEffectNotice(chat.id, successfulTest, memoryWrites, action);
+      if (!res.writableEnded) res.end();
+      return;
+    }
+    if (successfulTest || memoryWrites.length) {
+      const message = persistToolSideEffectNotice(chat.id, successfulTest, memoryWrites, action);
+      emit({
+        type: "complete",
+        ok: false,
+        providerError: "provider_request_failed",
+        message,
+        action,
+        test: successfulTest?.test || null,
+        memoryWrites,
+        toolErrors: outputs.filter((output) => !output.ok),
+        memory: memory.status
+      });
+    } else {
+      emit({ type: "error", error: error.code || "provider_request_failed", message: String(error.message || "Provider stream failed").slice(0, 500) });
+    }
+    res.end();
+  }
+}
+
+function persistToolSideEffectNotice(chatId, successfulTest, memoryWrites, action) {
+  const content = successfulTest
+    ? "Тест сохранён, но provider не вернул финальный ответ. Откройте тест или повторите запрос для текстового ответа."
+    : memoryWrites.length
+      ? "Graph Memory обновлена, но provider не вернул финальный текстовый ответ."
+      : "Provider не вернул финальный ответ.";
+  return persistAssistantMessage(chatId, "system", content, action);
+}
+
+function startAssistantStream(res) {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no"
+  });
+  res.flushHeaders?.();
+}
+
+function sendAssistantEvent(res, event) {
+  if (!res.destroyed && !res.writableEnded) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+function persistAssistantMessage(chatId, role, content, action, reasoning = "") {
   const createdAt = new Date().toISOString();
-  db.prepare("INSERT INTO assistant_messages (chat_id, role, content, action, created_at) VALUES (?, ?, ?, ?, ?)")
-    .run(chatId, role, content, action ? JSON.stringify(action) : "", createdAt);
+  db.prepare("INSERT INTO assistant_messages (chat_id, role, content, action, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(chatId, role, content, action ? JSON.stringify(action) : "", String(reasoning || "").slice(0, 20000), createdAt);
   db.prepare("UPDATE assistant_chats SET updated_at = ? WHERE id = ?").run(createdAt, chatId);
-  return { role, content, action, createdAt };
+  return { role, content, action, reasoning: String(reasoning || "").slice(0, 20000), createdAt };
 }
 
 function boundedChatMessages(chatId) {
@@ -1330,6 +1487,232 @@ async function continueProvider(provider, baseUrl, apiKey, { model, instructions
       parallel_tool_calls: false
     })
   });
+}
+
+async function requestProviderStream(provider, baseUrl, apiKey, { model, instructions, history, tools, signal, onDelta }) {
+  const headers = {
+    authorization: `Bearer ${apiKey}`,
+    "content-type": "application/json",
+    accept: "text/event-stream",
+    ...headersFromEnv(provider.envHeaders)
+  };
+  if (provider.mode === "openai-responses") {
+    const body = {
+      model,
+      instructions,
+      input: history,
+      tools,
+      parallel_tool_calls: false,
+      stream: true,
+      ...(supportsOpenAiReasoningSummary(provider, model) ? { reasoning: { summary: "auto" } } : {})
+    };
+    return fetchProviderStream(provider.mode, `${baseUrl}/responses`, headers, body, signal, onDelta);
+  }
+  const body = {
+    model,
+    messages: [{ role: "system", content: instructions }, ...history],
+    tools,
+    parallel_tool_calls: false,
+    stream: true
+  };
+  return fetchProviderStream(provider.mode, `${baseUrl}/chat/completions`, headers, body, signal, onDelta);
+}
+
+async function continueProviderStream(provider, baseUrl, apiKey, { model, instructions, history, tools, initial, calls, outputs, signal, onDelta }) {
+  const headers = {
+    authorization: `Bearer ${apiKey}`,
+    "content-type": "application/json",
+    accept: "text/event-stream",
+    ...headersFromEnv(provider.envHeaders)
+  };
+  if (provider.mode === "openai-responses") {
+    const initialOutput = Array.isArray(initial?.output) && initial.output.length
+      ? initial.output
+      : calls.map((call) => ({ type: "function_call", call_id: call.id, name: call.name, arguments: call.arguments }));
+    const body = {
+      model,
+      instructions,
+      input: [
+        ...history,
+        ...initialOutput,
+        ...calls.map((call, index) => ({ type: "function_call_output", call_id: call.id, output: JSON.stringify(providerToolOutput(outputs[index])) }))
+      ],
+      tools,
+      parallel_tool_calls: false,
+      stream: true,
+      ...(supportsOpenAiReasoningSummary(provider, model) ? { reasoning: { summary: "auto" } } : {})
+    };
+    return fetchProviderStream(provider.mode, `${baseUrl}/responses`, headers, body, signal, onDelta);
+  }
+  const assistant = initial?.choices?.[0]?.message || {};
+  const assistantMessage = {
+    role: "assistant",
+    content: assistant.content || null,
+    tool_calls: assistant.tool_calls || []
+  };
+  if (assistant.reasoning) assistantMessage.reasoning = assistant.reasoning;
+  if (assistant.reasoning_details) assistantMessage.reasoning_details = assistant.reasoning_details;
+  const body = {
+    model,
+    messages: [
+      { role: "system", content: instructions },
+      ...history,
+      assistantMessage,
+      ...calls.map((call, index) => ({ role: "tool", tool_call_id: call.id, content: JSON.stringify(providerToolOutput(outputs[index])) }))
+    ],
+    tools,
+    parallel_tool_calls: false,
+    stream: true
+  };
+  return fetchProviderStream(provider.mode, `${baseUrl}/chat/completions`, headers, body, signal, onDelta);
+}
+
+function supportsOpenAiReasoningSummary(provider, model) {
+  return provider.id === "openai" && /^(?:o\d|gpt-5|codex)/i.test(String(model || ""));
+}
+
+async function fetchProviderStream(mode, url, headers, body, signal, onDelta) {
+  const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new ProviderStreamError("provider_request_failed", `${response.status}: ${text.slice(0, 300)}`);
+  }
+  if (!response.body) throw new ProviderStreamError("empty_provider_stream");
+  return readProviderStream(mode, response.body, onDelta);
+}
+
+async function readProviderStream(mode, body, onDelta) {
+  let content = "";
+  let reasoning = "";
+  let completed = null;
+  const calls = new Map();
+  const responseItems = new Map();
+  const reasoningDetails = [];
+
+  await forEachSsePayload(body, (payload) => {
+    if (payload === "[DONE]") return;
+    let event;
+    try {
+      event = JSON.parse(payload);
+    } catch {
+      throw new ProviderStreamError("invalid_provider_stream_event");
+    }
+    if (event?.error || event?.type === "error" || event?.type === "response.failed" || event?.type === "response.incomplete") {
+      throw new ProviderStreamError("provider_stream_failed", event?.error?.message || event?.response?.error?.message || "Provider stream failed");
+    }
+
+    if (mode === "openai-responses") {
+      if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+        content = appendProviderText(content, event.delta, 100000, "provider_response_too_large");
+        onDelta?.({ type: "text_delta", delta: event.delta });
+      } else if (event.type === "response.reasoning_summary_text.delta" && typeof event.delta === "string") {
+        reasoning = appendProviderText(reasoning, event.delta, 20000, "provider_reasoning_too_large");
+        onDelta?.({ type: "reasoning_delta", delta: event.delta });
+      } else if (event.type === "response.output_item.added" && event.item) {
+        responseItems.set(Number(event.output_index || 0), { ...event.item, arguments: String(event.item.arguments || "") });
+      } else if (event.type === "response.function_call_arguments.delta") {
+        const index = Number(event.output_index || 0);
+        const call = responseItems.get(index) || { type: "function_call", id: event.item_id, arguments: "" };
+        call.arguments = appendProviderText(String(call.arguments || ""), String(event.delta || ""), 100000, "tool_arguments_too_large");
+        responseItems.set(index, call);
+      } else if (event.type === "response.output_item.done" && event.item) {
+        const index = Number(event.output_index || 0);
+        const accumulated = responseItems.get(index);
+        responseItems.set(index, {
+          ...accumulated,
+          ...event.item,
+          arguments: String(event.item.arguments || accumulated?.arguments || "")
+        });
+      } else if (event.type === "response.completed") {
+        completed = event.response || {};
+      }
+      return;
+    }
+
+    const delta = event?.choices?.[0]?.delta || {};
+    if (typeof delta.content === "string") {
+      content = appendProviderText(content, delta.content, 100000, "provider_response_too_large");
+      onDelta?.({ type: "text_delta", delta: delta.content });
+    }
+    const explicitReasoning = typeof delta.reasoning === "string"
+      ? delta.reasoning
+      : typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+    const reasoningDetailText = explicitReasoning ? "" : displayableReasoningDetails(delta.reasoning_details);
+    const reasoningDelta = explicitReasoning || reasoningDetailText;
+    if (reasoningDelta) {
+      reasoning = appendProviderText(reasoning, reasoningDelta, 20000, "provider_reasoning_too_large");
+      onDelta?.({ type: "reasoning_delta", delta: reasoningDelta });
+    }
+    if (Array.isArray(delta.reasoning_details)) reasoningDetails.push(...delta.reasoning_details);
+    for (const streamedCall of delta.tool_calls || []) {
+      const index = Number(streamedCall.index || 0);
+      const call = calls.get(index) || { id: "", name: "", arguments: "" };
+      if (streamedCall.id) call.id = streamedCall.id;
+      if (streamedCall.function?.name) call.name = streamedCall.function.name;
+      if (streamedCall.function?.arguments) {
+        call.arguments = appendProviderText(call.arguments, streamedCall.function.arguments, 100000, "tool_arguments_too_large");
+      }
+      calls.set(index, call);
+    }
+  });
+
+  if (mode === "openai-responses") {
+    const streamedItems = [...responseItems.entries()].sort(([left], [right]) => left - right).map(([, item]) => item);
+    const functionCalls = streamedItems.filter((item) => item?.type === "function_call")
+      .map((item) => ({ id: item.call_id, name: item.name, arguments: item.arguments }));
+    const data = { ...(completed || {}), output: completed?.output?.length ? completed.output : streamedItems };
+    return { content, reasoning, calls: functionCalls, data };
+  }
+
+  const functionCalls = [...calls.entries()].sort(([left], [right]) => left - right).map(([, call]) => call);
+  const message = {
+    role: "assistant",
+    content: content || null,
+    tool_calls: functionCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }))
+  };
+  if (reasoning) message.reasoning = reasoning;
+  if (reasoningDetails.length) message.reasoning_details = reasoningDetails;
+  return { content, reasoning, calls: functionCalls, data: { choices: [{ message }] } };
+}
+
+async function forEachSsePayload(body, handle) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for await (const chunk of body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let separator = buffer.match(/\r?\n\r?\n/);
+    while (separator) {
+      const frame = buffer.slice(0, separator.index);
+      buffer = buffer.slice(separator.index + separator[0].length);
+      const payload = frame.split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      if (payload) handle(payload);
+      separator = buffer.match(/\r?\n\r?\n/);
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    const payload = buffer.split(/\r?\n/).filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart()).join("\n");
+    if (payload) handle(payload);
+  }
+}
+
+function appendProviderText(current, delta, limit, code) {
+  const next = `${current}${delta}`;
+  if (next.length > limit) throw new ProviderStreamError(code);
+  return next;
+}
+
+function displayableReasoningDetails(details) {
+  if (!Array.isArray(details)) return "";
+  return details.map((detail) => {
+    if (detail?.type === "reasoning.summary" && typeof detail.summary === "string") return detail.summary;
+    if (detail?.type === "reasoning.text" && typeof detail.text === "string") return detail.text;
+    return "";
+  }).join("");
 }
 
 function providerToolOutput(output) {
@@ -1482,6 +1865,20 @@ function assistantResponseText(data) {
   if (typeof data?.output_text === "string") return data.output_text;
   if (typeof data?.choices?.[0]?.message?.content === "string") return data.choices[0].message.content;
   return (data?.output || []).flatMap((item) => item.content || []).find((item) => typeof item?.text === "string")?.text || "";
+}
+
+function assistantReasoningText(data) {
+  const responsesSummary = (data?.output || [])
+    .filter((item) => item?.type === "reasoning")
+    .flatMap((item) => item.summary || [])
+    .filter((item) => item?.type === "summary_text" && typeof item.text === "string")
+    .map((item) => item.text)
+    .join("\n\n");
+  if (responsesSummary) return responsesSummary;
+  const message = data?.choices?.[0]?.message;
+  if (typeof message?.reasoning === "string") return message.reasoning;
+  if (typeof message?.reasoning_content === "string") return message.reasoning_content;
+  return displayableReasoningDetails(message?.reasoning_details);
 }
 
 function quizTests(_req, res) {
@@ -1694,7 +2091,7 @@ function readAssistantChats() {
   return db.prepare("SELECT id, label, project_id AS projectId, task_id AS taskId, created_at AS createdAt, updated_at AS updatedAt FROM assistant_chats ORDER BY updated_at DESC").all()
     .map((chat) => ({
       ...chat,
-      messages: db.prepare("SELECT role, content, action, created_at AS createdAt FROM assistant_messages WHERE chat_id = ? ORDER BY id").all(chat.id)
+      messages: db.prepare("SELECT role, content, action, reasoning, created_at AS createdAt FROM assistant_messages WHERE chat_id = ? ORDER BY id").all(chat.id)
         .map((message) => {
           const action = message.action ? parseJson(message.action) : null;
           const test = action?.type === "open_test" ? readQuiz(action.targetId) : null;

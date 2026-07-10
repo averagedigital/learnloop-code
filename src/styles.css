@@ -1052,8 +1052,39 @@ button:disabled {
   transform: scale(0.97);
 }
 
-.chatMessage.pending p {
+.streamWaiting {
   color: var(--chat-muted);
+}
+
+.reasoningDisclosure {
+  width: min(100%, 760px);
+  border-left: 1px solid rgba(133, 132, 189, 0.32);
+  color: var(--chat-muted);
+}
+
+.reasoningDisclosure summary {
+  width: fit-content;
+  padding: 3px 0 3px 12px;
+  color: var(--chat-muted);
+  font: 600 11px/1.4 var(--font-mono);
+  cursor: pointer;
+  user-select: none;
+}
+
+.reasoningDisclosure[open] summary {
+  margin-bottom: 8px;
+  color: var(--chat-accent);
+}
+
+.reasoningDisclosure .chatMarkdown {
+  padding: 0 0 3px 12px;
+  color: var(--chat-muted);
+  font-size: 14px;
+}
+
+.streamInterrupted {
+  color: var(--chat-muted);
+  font: 10px/1.4 var(--font-mono);
 }
 
 .thinkingDot {
@@ -1065,6 +1096,13 @@ button:disabled {
   background: var(--chat-accent);
   box-shadow: 0 0 18px rgba(249, 204, 115, 0.58);
   animation: signalPulse 900ms cubic-bezier(0.23, 1, 0.32, 1) infinite alternate;
+}
+
+.stopStreamIcon {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: currentColor;
 }
 
 .backendError,
