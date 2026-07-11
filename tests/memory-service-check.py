@@ -13,6 +13,7 @@ from memory_service.service import (
     event_to_record,
     has_embedding_credentials,
     health_status,
+    list_memory,
     parse_json_bytes,
     row_to_graph_item,
     row_to_memory,
@@ -104,6 +105,15 @@ class FakeGraph:
         return object()
 
 
+class EmptyGraph:
+    async def ro_query(self, _query, _params=None):
+        raise RuntimeError("Invalid graph operation on empty key")
+
+
+async def empty_graph_client(_group_id="codelearn-local"):
+    return EmptyGraph()
+
+
 async def ready_graph_client():
     return FakeGraph()
 
@@ -166,6 +176,9 @@ try:
     assert status == 200
     assert payload["ready"] is True
     assert payload["mode"] == "direct-triples"
+
+    service.graph_client = empty_graph_client
+    assert asyncio.run(list_memory("empty-project", 10)) == {"ok": True, "groupId": "empty-project", "items": []}
 
     service.graph_client = broken_graph_client
     status, payload = asyncio.run(health_status())

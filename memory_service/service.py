@@ -81,17 +81,22 @@ async def search_memory(query, group_id, limit):
 
 async def list_memory(group_id, limit):
     graph = await graph_client(group_id)
-    result = await graph.ro_query(
-        """
-        MATCH (s)-[r]->(o)
-        WHERE r.fact IS NOT NULL
-        RETURN coalesce(r.uuid, ''), coalesce(s.name, ''), coalesce(r.relation, type(r)),
-               coalesce(o.name, ''), coalesce(r.fact, ''), coalesce(r.created_at, '')
-        ORDER BY r.created_at DESC
-        LIMIT $limit
-        """,
-        {"limit": limit},
-    )
+    try:
+        result = await graph.ro_query(
+            """
+            MATCH (s)-[r]->(o)
+            WHERE r.fact IS NOT NULL
+            RETURN coalesce(r.uuid, ''), coalesce(s.name, ''), coalesce(r.relation, type(r)),
+                   coalesce(o.name, ''), coalesce(r.fact, ''), coalesce(r.created_at, '')
+            ORDER BY r.created_at DESC
+            LIMIT $limit
+            """,
+            {"limit": limit},
+        )
+    except Exception as exc:
+        if "Invalid graph operation on empty key" not in str(exc):
+            raise
+        return {"ok": True, "groupId": group_id, "items": []}
     return {"ok": True, "groupId": group_id, "items": [row_to_graph_item(row) for row in result.result_set]}
 
 

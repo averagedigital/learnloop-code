@@ -621,6 +621,7 @@ assert.match(appSource, /quizProgress/);
 assert.match(appSource, /className=\{`quizOption \$\{state\}`\}/);
 assert.match(appStyles, /\.quizOption\.correct/);
 assert.match(appStyles, /\.quizOption\.incorrect/);
+assert.match(appStyles, /max-height: min\(52vh, 560px\)/);
 assert.match(appSource, /Правильно/);
 assert.match(appSource, /context\.lineWidth = 0\.65/);
 assert.match(profileSource, /personalityDirty/);
