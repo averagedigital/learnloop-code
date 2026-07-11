@@ -173,10 +173,11 @@ async function startJudge() {
     for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
     judgeSubmissions.push(body);
-    if (body.source_code.includes("# TIMEOUT")) return reply(res, 200, { status: { description: "Time Limit Exceeded" }, stdout: "", stderr: "", time: "5.0", memory: 2048 });
+    const source = Buffer.from(body.source_code, "base64").toString("utf8");
+    if (source.includes("# TIMEOUT")) return reply(res, 200, { status: { description: "Time Limit Exceeded" }, stdout: "", stderr: "", time: "5.0", memory: 2048 });
     return reply(res, 200, {
       status: { description: "Accepted" },
-      stdout: JSON.stringify({ status: "passed", stdout: "", stderr: "", public_test_results: [{ name: "Счётчик сохраняет состояние", passed: true, message: "прошла" }], hidden_test_summary: "", category: "accepted" }),
+      stdout: Buffer.from(JSON.stringify({ status: "passed", stdout: "", stderr: "", public_test_results: [{ name: "Счётчик сохраняет состояние", passed: true, message: "прошла" }], hidden_test_summary: "", category: "accepted" }), "utf8").toString("base64"),
       stderr: "",
       time: "0.02",
       memory: 1024

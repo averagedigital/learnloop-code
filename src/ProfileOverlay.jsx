@@ -244,9 +244,6 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
       providerBaseUrl: settings.providerBaseUrl || provider.baseUrl,
       providerModel: settings.providerModel || "",
       providerKey: "",
-      workspaceRuntime: settings.workspaceRuntime || "code-server",
-      workspaceRuntimeUrl: settings.workspaceRuntimeUrl || "http://127.0.0.1:8080",
-      agentRuntimeUrl: settings.agentRuntimeUrl || "http://127.0.0.1:3000",
       graphMemoryUrl: settings.graphMemoryUrl || "http://127.0.0.1:8008",
       graphEmbeddingProvider: settings.graphEmbeddingProvider || "openrouter",
       graphEmbeddingBaseUrl: settings.graphEmbeddingBaseUrl || "https://openrouter.ai/api/v1",
@@ -378,9 +375,6 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
       providerId: form.providerId,
       providerBaseUrl: form.providerBaseUrl,
       providerModel: form.providerModel,
-      workspaceRuntime: form.workspaceRuntime,
-      workspaceRuntimeUrl: form.workspaceRuntimeUrl,
-      agentRuntimeUrl: form.agentRuntimeUrl,
       graphMemoryUrl: form.graphMemoryUrl,
       graphEmbeddingProvider: form.graphEmbeddingProvider,
       graphEmbeddingBaseUrl: form.graphEmbeddingBaseUrl,
@@ -596,14 +590,6 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
                       ))}
                     </div>
                   ) : null}
-                </div>
-                <div className="settingsBlock">
-                  <div className="settingsBlockTitle"><div><h4>Runtime</h4><p>Workspace и coding agent в локальном контуре.</p></div><span className={runtime?.workspace?.ok && runtime?.agent?.ok ? "configured" : ""}>{runtime?.workspace?.ok && runtime?.agent?.ok ? "online" : "check"}</span></div>
-                  <div className="fieldGrid two">
-                    <Field label="Workspace"><select value={form.workspaceRuntime || "code-server"} onChange={(event) => change("workspaceRuntime", event.target.value)}><option value="code-server">code-server</option><option value="openvscode-server">openvscode-server</option></select></Field>
-                    <Field label="Workspace URL"><input value={form.workspaceRuntimeUrl || ""} onChange={(event) => change("workspaceRuntimeUrl", event.target.value)} type="url" placeholder="http://…" /></Field>
-                    <Field label="Agent URL"><input value={form.agentRuntimeUrl || ""} onChange={(event) => change("agentRuntimeUrl", event.target.value)} type="url" placeholder="http://…" /></Field>
-                  </div>
                 </div>
                 <div className="settingsBlock">
                   <div className="settingsBlockTitle"><div><h4>Graph Memory</h4><p>Чатовая LLM формирует связи, backend сохраняет их в FalkorDB. Здесь нужен только эмбеддер для поиска.</p></div><span className={runtime?.graph?.ok ? "configured" : ""}>{runtime?.graph?.ok ? "online" : runtime?.graph?.configured ? "offline" : "setup"}</span></div>

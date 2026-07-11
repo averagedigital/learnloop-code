@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { assistantMarkdownToHtml, buildMascotAssistantPrompt, initMascotAssistant, raiseMascotAssistant } from "./mascot-assistant.js";
 import ProfileOverlay from "./ProfileOverlay.jsx";
 import { providers } from "./platform.js";
@@ -8,6 +8,8 @@ const starterPrompts = [
   "Составь небольшое задание с проверяемыми критериями.",
   "Подготовь тесты и документацию для моего решения."
 ];
+
+const CodeEditor = lazy(() => import("./CodeEditor.jsx"));
 
 async function requestJson(url, options) {
   const response = await fetch(url, options);
@@ -342,7 +344,7 @@ function TaskView({ tasks, selectedTaskId, chats, mascotId, requestJson, onTaskU
   const [output, setOutput] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const taskChat = chats.find((chat) => chat.taskId === selected?.id);
+  const taskChat = chats.find((chat) => chat.taskId === selected?.id && !isMascotChat(chat));
   const [tutorChatId, setTutorChatId] = useState("");
   const [tutorMessages, setTutorMessages] = useState([]);
   const [tutorDraft, setTutorDraft] = useState("");
@@ -350,6 +352,7 @@ function TaskView({ tasks, selectedTaskId, chats, mascotId, requestJson, onTaskU
   const [tutorOpen, setTutorOpen] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const tutorAbortRef = useRef(null);
+  const tutorRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -465,6 +468,7 @@ function TaskView({ tasks, selectedTaskId, chats, mascotId, requestJson, onTaskU
         body: JSON.stringify({ code })
       });
       setTutorOpen(true);
+      requestAnimationFrame(() => tutorRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
       await requestTutor("Проведи ревью текущего решения: оцени корректность, читаемость, граничные случаи и соответствие acceptance criteria. Учти последние результаты исполнения, если они есть.");
     } catch (requestError) {
       setError(requestError.message || "Не удалось запросить ревью.");
@@ -477,30 +481,32 @@ function TaskView({ tasks, selectedTaskId, chats, mascotId, requestJson, onTaskU
     <div className="taskView">
       <header className="taskHeader"><div><p>CODELEARNML / TASK</p><h1>{log?.task.title || selected.title}</h1><span>{log?.task.language || "python"} · {selected.difficulty || "средняя"} · {selected.minutes || 20} мин</span></div></header>
       <div className="taskWorkbench">
-        <section className="taskBrief" aria-label="Условие задачи">
-          <h2>Условие</h2>
-          <p>{log?.task.prompt}</p>
-          <h3>Готово, когда</h3>
-          <ul>{(log?.task.acceptanceCriteria || []).map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
-        </section>
+        <details className="taskBrief">
+          <summary><span aria-hidden="true">☰</span> Условие задачи</summary>
+          <div className="taskBriefBody">
+            <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(log?.task.prompt) }} />
+            <h3>Готово, когда</h3>
+            <ul>{(log?.task.acceptanceCriteria || []).map((criterion) => <li key={criterion}><span className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(criterion) }} /></li>)}</ul>
+          </div>
+        </details>
         <section className="taskEditor" aria-label="Редактор решения">
           <div className="taskEditorBar"><span>{log?.task.language === "javascript" ? "solution.js" : "solution.py"}</span><small>{loading ? "выполняется" : "сохраняется при запуске или ревью"}</small></div>
-          <textarea aria-label="Код решения" value={code} onChange={(event) => setCode(event.target.value)} spellCheck="false" disabled={loading} />
+          <Suspense fallback={<div className="codeEditor loading" role="status">Загружаю редактор…</div>}><CodeEditor value={code} language={log?.task.language || "python"} disabled={loading} onChange={setCode} /></Suspense>
           <div className="taskActions"><button type="button" onClick={() => execute("run")} disabled={loading}>Запустить код</button><button type="button" className="primary" onClick={reviewSolution} disabled={reviewing || tutorSending}>{reviewing ? "Ревью…" : "Ревью LLM"}</button></div>
           {output ? <div className={`taskOutput ${output.execution.status}`} role="status"><strong>{output.feedback}</strong><pre>{[output.execution.stdout, output.execution.stderr].filter(Boolean).join("\n") || output.execution.public_test_results.map((check) => `${check.passed ? "✓" : "×"} ${check.name}`).join("\n")}</pre></div> : null}
           {error ? <p className="composerError" role="alert">{error}</p> : null}
+          <details className="taskTutor" ref={tutorRef} open={tutorOpen} onToggle={(event) => setTutorOpen(event.currentTarget.open)}>
+            <summary><img className="taskTutorMascot" src={profileMascotFrameSrc(mascotId, tutorSending ? "thinking" : "idle", 0)} alt="" />Ревью и диалог <span>{tutorMessages.length ? tutorMessages.length : ""}</span></summary>
+            <div className="taskTutorThread">
+              {tutorMessages.length ? tutorMessages.map((message, index) => <div className={`taskTutorMessage ${message.role}`} key={message.createdAt || `${message.role}-${index}`}>
+                {message.reasoning ? <details className="reasoningDisclosure"><summary>Краткое обоснование</summary><div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.reasoning) }} /></details> : null}
+                {message.content ? <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.content) }} /> : <span>Обдумываю…</span>}
+              </div>) : <p>Спроси о текущем коде или результате запуска.</p>}
+            </div>
+            <form className="taskTutorComposer" onSubmit={askTutor}><input aria-label="Вопрос куратору по задаче" value={tutorDraft} onChange={(event) => setTutorDraft(event.target.value)} placeholder="Почему не проходит проверка?" disabled={tutorSending} /><button type={tutorSending ? "button" : "submit"} onClick={tutorSending ? () => tutorAbortRef.current?.abort() : undefined} disabled={!tutorSending && !tutorDraft.trim()}>{tutorSending ? "Стоп" : "Спросить"}</button></form>
+          </details>
         </section>
       </div>
-      <details className="taskTutor" open={tutorOpen} onToggle={(event) => setTutorOpen(event.currentTarget.open)}>
-        <summary><img className="taskTutorMascot" src={profileMascotFrameSrc(mascotId, tutorSending ? "thinking" : "idle", 0)} alt="" />Диалог с куратором <span>{tutorMessages.length ? tutorMessages.length : ""}</span></summary>
-        <div className="taskTutorThread">
-          {tutorMessages.length ? tutorMessages.map((message, index) => <div className={`taskTutorMessage ${message.role}`} key={message.createdAt || `${message.role}-${index}`}>
-            {message.reasoning ? <details className="reasoningDisclosure"><summary>Краткое обоснование</summary><div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.reasoning) }} /></details> : null}
-            {message.content ? <div className="chatMarkdown" dangerouslySetInnerHTML={{ __html: assistantMarkdownToHtml(message.content) }} /> : <span>Обдумываю…</span>}
-          </div>) : <p>Спроси о текущем коде или результате запуска.</p>}
-        </div>
-        <form className="taskTutorComposer" onSubmit={askTutor}><input aria-label="Вопрос куратору по задаче" value={tutorDraft} onChange={(event) => setTutorDraft(event.target.value)} placeholder="Почему не проходит проверка?" disabled={tutorSending} /><button type={tutorSending ? "button" : "submit"} onClick={tutorSending ? () => tutorAbortRef.current?.abort() : undefined} disabled={!tutorSending && !tutorDraft.trim()}>{tutorSending ? "Стоп" : "Спросить"}</button></form>
-      </details>
     </div>
   );
 }
@@ -959,7 +965,6 @@ export default function App() {
 
         <div className="composerDock">
           <div className="composerRow">
-            <img className="composerMascot" src={profileMascotFrameSrc(settings.mascotId, sending ? "thinking" : draft.trim() ? "typing" : "idle", frameIndex)} alt="" />
             <div className="composerColumn">
               {memoryNotice ? <p className="memoryNotice" role="status">{memoryNotice}</p> : null}
               {composerError ? <p className="composerError" role="alert">{composerError}</p> : null}

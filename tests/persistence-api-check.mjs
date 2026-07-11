@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -9,7 +9,6 @@ const nodeBin = process.execPath;
 const port = 49173;
 const modelPort = 49174;
 const graphPort = 49175;
-const agentPort = 49176;
 const judgePort = 49177;
 const graphFact = "Graph retrieval remembers missing-flag order";
 const tmp = await mkdtemp(join(tmpdir(), "codelearn-db-"));
@@ -20,11 +19,9 @@ const fakeBin = join(tmp, "bin");
 const dockerCallLog = join(tmp, "docker-call.log");
 let modelServer;
 let graphServer;
-let agentServer;
 let judgeServer;
 const graphEvents = [];
 const graphSearches = [];
-const agentCommands = [];
 const judgeSubmissions = [];
 
 try {
@@ -34,7 +31,6 @@ try {
   await chmod(fakeDocker, 0o700);
   modelServer = await startModelServer(modelPort);
   graphServer = await startGraphServer(graphPort, graphEvents, graphSearches);
-  agentServer = await startAgentServer(agentPort, agentCommands);
   judgeServer = await startJudgeServer(judgePort, judgeSubmissions);
   let server = await startServer({ seed: "true", dbPath, port });
   let state = await fetchJson(`http://127.0.0.1:${port}/api/app-state`);
@@ -49,13 +45,13 @@ try {
   assert.deepEqual(state.memory, []);
   assert.deepEqual(state.skillGraph, []);
   assert.equal(state.providerStatus.openai.configured, false);
-  assert.equal(state.settings.workspaceRuntime, "code-server");
-  assert.equal(state.settings.workspaceRuntimeUrl, `http://127.0.0.1:${agentPort}`);
-  assert.equal(state.settings.agentRuntimeUrl, `http://127.0.0.1:${agentPort}`);
+  assert.equal(state.settings.workspaceRuntime, undefined);
+  assert.equal(state.settings.workspaceRuntimeUrl, undefined);
+  assert.equal(state.settings.agentRuntimeUrl, undefined);
   assert.equal(state.settings.graphMemoryUrl, `http://127.0.0.1:${graphPort}`);
   const initialRuntimeHealth = await fetchJson(`http://127.0.0.1:${port}/api/runtime/health`);
-  assert.equal(initialRuntimeHealth.workspace.ok, true);
-  assert.equal(initialRuntimeHealth.agent.ok, true);
+  assert.equal(initialRuntimeHealth.workspace, undefined);
+  assert.equal(initialRuntimeHealth.agent, undefined);
   assert.equal(initialRuntimeHealth.graph.ok, true);
   const unicodePersonality = "# Мой контекст\n\nПиши примеры на Rust 🦀.\n\n## 自由な構造\nПорядок разделов важен.";
   assert.equal((await fetch(`http://127.0.0.1:${port}/api/personality`, {
@@ -146,8 +142,8 @@ try {
   assert.equal(executed.public_test_results.every((check) => check.passed), true);
   assert.equal(judgeSubmissions.length, 1);
   assert.equal(judgeSubmissions[0].language_id, 71);
-  assert.match(judgeSubmissions[0].source_code, /answer = 2 \+ 2/);
-  assert.match(judgeSubmissions[0].source_code, /assert answer == 4/);
+  assert.match(Buffer.from(judgeSubmissions[0].source_code, "base64").toString("utf8"), /answer = 2 \+ 2/);
+  assert.match(Buffer.from(judgeSubmissions[0].source_code, "base64").toString("utf8"), /assert answer == 4/);
   assert.equal(judgeSubmissions[0].cpu_time_limit, 3);
   assert.equal(judgeSubmissions[0].memory_limit, 131072);
   assert.equal(judgeSubmissions[0].enable_network, false);
@@ -187,115 +183,10 @@ try {
   assert.equal(invalidProgressCode.status, 400);
   assert.equal((await invalidProgressCode.json()).error, "invalid_progress_code");
   assert.equal(await readFile(join(workspaceRoot, taskId, "solution.py"), "utf8"), "print('persisted')");
-  const solutionWrite = await fetchJson(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files/${encodeURIComponent("solution.py")}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: "print('from workspace')" })
-  });
-  assert.equal(solutionWrite.ok, true);
-  await fetchJson(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files`);
-  assert.equal(await readFile(join(workspaceRoot, taskId, "solution.py"), "utf8"), "print('from workspace')");
-  const agentWrite = await fetchJson(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files/${encodeURIComponent("notes/result.txt")}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: "agent note" })
-  });
-  assert.equal(agentWrite.ok, true);
-  let fileSaveLog = await fetchJson(`http://127.0.0.1:${port}/api/tasks/${taskId}/log`);
-  assert.ok(fileSaveLog.agentEvents.some((event) => event.type === "workspace_file_saved" && event.payload.name === "notes/result.txt"));
-  const agentRead = await fetchJson(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files/${encodeURIComponent("notes/result.txt")}`);
-  assert.equal(agentRead.content, "agent note");
-  const invalidAgentFileContent = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files/${encodeURIComponent("notes/bad.txt")}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: { bad: true } })
-  });
-  assert.equal(invalidAgentFileContent.status, 400);
-  assert.equal((await invalidAgentFileContent.json()).error, "invalid_agent_file_content");
-  await fetchJson(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files/${encodeURIComponent("task.md")}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: "# Edited task\n" })
-  });
-  await fetchJson(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files`);
-  assert.equal(await readFile(join(workspaceRoot, taskId, "task.md"), "utf8"), "# Edited task\n");
-  const missingAgentFile = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files/${encodeURIComponent("notes/missing.txt")}`);
-  assert.equal(missingAgentFile.status, 404);
-  assert.equal((await missingAgentFile.json()).error, "workspace_file_not_found");
-  const missingNestedAgentFile = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files/${encodeURIComponent("missing-dir/missing.txt")}`);
-  assert.equal(missingNestedAgentFile.status, 404);
-  assert.equal((await missingNestedAgentFile.json()).error, "workspace_file_not_found");
-  const agentFiles = await fetchJson(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files`);
-  assert.equal(agentFiles.files.includes("notes/result.txt"), true);
-  const agentTraversal = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files/${encodeURIComponent("../outside.txt")}`);
-  assert.equal(agentTraversal.status, 403);
-  assert.equal((await agentTraversal.json()).error, "workspace_path_escape");
-  const outsideFile = join(tmp, "outside.txt");
-  await writeFile(outsideFile, "outside", "utf8");
-  await symlink(outsideFile, join(workspaceRoot, taskId, "notes/link.txt"));
-  const symlinkWrite = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files/${encodeURIComponent("notes/link.txt")}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ content: "escaped" })
-  });
-  assert.equal(symlinkWrite.status, 403);
-  assert.equal((await symlinkWrite.json()).error, "workspace_path_escape");
-  assert.equal(await readFile(outsideFile, "utf8"), "outside");
-  const agentRun = await fetchJson(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/run`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ command: ["python3", "solution.py"] })
-  });
-  assert.equal(agentRun.result.status, "queued");
-  assert.equal(agentCommands[0].cwd, `/workspaces/${taskId}`);
-  assert.deepEqual(agentCommands[0].command, ["python3", "solution.py"]);
-  let agentRunLog = await fetchJson(`http://127.0.0.1:${port}/api/tasks/${taskId}/log`);
-  const queuedAgentCommand = agentRunLog.agentEvents.find((event) => event.type === "agent_command");
-  assert.deepEqual(queuedAgentCommand.payload.command, ["python3", "solution.py"]);
-  assert.equal(queuedAgentCommand.payload.resultStatus, "queued");
-  const tooLongAgentCommand = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/run`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ command: ["python3", "x".repeat(201)] })
-  });
-  assert.equal(tooLongAgentCommand.status, 400);
-  assert.equal((await tooLongAgentCommand.json()).error, "agent_command_too_long");
-  const objectAgentCommand = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/run`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ command: ["python3", { bad: true }] })
-  });
-  assert.equal(objectAgentCommand.status, 400);
-  assert.equal((await objectAgentCommand.json()).error, "invalid_agent_command");
-  const invalidAgentRuntimeSetting = await fetch(`http://127.0.0.1:${port}/api/settings`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ agentRuntimeUrl: "file:///tmp/agent" })
-  });
-  assert.equal(invalidAgentRuntimeSetting.status, 400);
-  assert.equal((await invalidAgentRuntimeSetting.json()).error, "invalid_agent_runtime_url");
-  await fetchJson(`http://127.0.0.1:${port}/api/settings`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ agentRuntimeUrl: "http://127.0.0.1:9" })
-  });
-  const unreachableAgentRun = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/run`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ command: ["python3", "solution.py"] })
-  });
-  assert.equal(unreachableAgentRun.status, 502);
-  assert.equal((await unreachableAgentRun.json()).error, "agent_runtime_unreachable");
-  agentRunLog = await fetchJson(`http://127.0.0.1:${port}/api/tasks/${taskId}/log`);
-  assert.equal(agentRunLog.agentEvents.at(-1).type, "agent_command_failed");
-  assert.deepEqual(agentRunLog.agentEvents.at(-1).payload.command, ["python3", "solution.py"]);
-  await fetchJson(`http://127.0.0.1:${port}/api/settings`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ agentRuntimeUrl: `http://127.0.0.1:${agentPort}` })
-  });
-  const invalidRuntimeHealth = await fetchJson(`http://127.0.0.1:${port}/api/runtime/health`);
-  assert.equal(invalidRuntimeHealth.agent.ok, true);
+  const removedAgentFiles = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/files`);
+  assert.equal(removedAgentFiles.status, 404);
+  const removedAgentRun = await fetch(`http://127.0.0.1:${port}/api/workspace/tasks/${taskId}/agent/run`, { method: "POST" });
+  assert.equal(removedAgentRun.status, 404);
   const invalidLesson = await fetch(`http://127.0.0.1:${port}/api/lessons`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -516,7 +407,7 @@ try {
   assert.equal(hugeRunAgentEvent.status, 413);
   assert.equal((await hugeRunAgentEvent.json()).error, "task_run_too_large");
   const eventHistoryLog = await fetchJson(`http://127.0.0.1:${port}/api/tasks/${taskId}/log`);
-  assert.deepEqual(eventHistoryLog.agentEvents.map((event) => event.type), ["workspace_file_saved", "workspace_file_saved", "workspace_file_saved", "agent_command", "agent_command_failed", "check"]);
+  assert.deepEqual(eventHistoryLog.agentEvents.map((event) => event.type), ["check"]);
   let taskLogs = await fetchJson(`http://127.0.0.1:${port}/api/app-state`);
   assert.equal(taskLogs.taskLogs.find((task) => task.id === taskId).label, "Задание 1 выполнено");
   const failedRun = await fetchJson(`http://127.0.0.1:${port}/api/tasks/${taskId}/runs`, {
@@ -889,9 +780,6 @@ try {
       mascotId: "05_laptop_spiky",
       providerApiKeys: { openai: "oa-test-openai", openrouter: "sk-test-secret", yandex: "sk-test-yandex" },
       yandexFolderId: "folder-secret-123",
-      workspaceRuntime: "code-server",
-      workspaceRuntimeUrl: `http://127.0.0.1:${agentPort}`,
-      agentRuntimeUrl: `http://127.0.0.1:${agentPort}`,
       graphMemoryUrl: `http://127.0.0.1:${graphPort}`,
       graphEmbeddingProvider: "openrouter",
       graphEmbeddingBaseUrl: "https://openrouter.ai/api/v1",
@@ -937,8 +825,8 @@ try {
   });
   assert.equal(runtimeStart.ok, true);
   assert.deepEqual((await readFile(dockerCallLog, "utf8")).trim().split("\n"), [
-    "compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build",
-    "code-server", "openhands", "falkordb", "graph-memory"
+    "compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build", "--remove-orphans",
+    "falkordb", "graph-memory"
   ]);
   const arbitraryRuntimeStart = await fetch(`http://127.0.0.1:${port}/api/runtime/start`, {
     method: "POST",
@@ -1055,13 +943,6 @@ try {
   });
   assert.equal(invalidProviderBaseUrl.status, 400);
   assert.equal((await invalidProviderBaseUrl.json()).error, "invalid_provider_url");
-  const invalidWorkspaceRuntime = await fetch(`http://127.0.0.1:${port}/api/settings`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspaceRuntime: "desktop-root" })
-  });
-  assert.equal(invalidWorkspaceRuntime.status, 400);
-  assert.equal((await invalidWorkspaceRuntime.json()).error, "invalid_workspace_runtime");
   const invalidMascot = await fetch(`http://127.0.0.1:${port}/api/settings`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -1077,13 +958,6 @@ try {
   assert.equal(invalidMascotSettings.status, 400);
   assert.equal((await invalidMascotSettings.json()).error, "invalid_mascot_settings");
   assert.equal((await fetchJson(`http://127.0.0.1:${port}/api/app-state`)).settings.providerModel, "test-model");
-  const invalidWorkspaceRuntimeUrl = await fetch(`http://127.0.0.1:${port}/api/settings`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspaceRuntimeUrl: "file:///tmp/workspace" })
-  });
-  assert.equal(invalidWorkspaceRuntimeUrl.status, 400);
-  assert.equal((await invalidWorkspaceRuntimeUrl.json()).error, "invalid_workspace_runtime_url");
   const invalidSandboxCpu = await fetch(`http://127.0.0.1:${port}/api/settings`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -1100,8 +974,8 @@ try {
   assert.equal((await invalidSandboxMemory.json()).error, "invalid_sandbox_memory");
   const runtimeHealth = await fetchJson(`http://127.0.0.1:${port}/api/runtime/health`);
   assert.equal(runtimeHealth.ok, true);
-  assert.equal(runtimeHealth.workspace.ok, true);
-  assert.equal(runtimeHealth.agent.ok, true);
+  assert.equal(runtimeHealth.workspace, undefined);
+  assert.equal(runtimeHealth.agent, undefined);
   assert.equal(runtimeHealth.judge.ok, true);
   assert.equal(runtimeHealth.graph.ok, true);
   const invalidJson = await fetch(`http://127.0.0.1:${port}/api/settings`, {
@@ -1116,15 +990,15 @@ try {
   server = await startServer({ seed: "false", dbPath, port });
   state = await fetchJson(`http://127.0.0.1:${port}/api/app-state`);
 
-  assert.equal(state.progress[taskId].code, "print('from workspace')");
+  assert.equal(state.progress[taskId].code, "print('persisted')");
   assert.equal(state.progress[taskId].hintIndex, 2);
   assert.equal(state.settings.providerId, "openrouter");
   assert.equal(state.settings.providerModel, "test-model");
   assert.equal(state.settings.profileName, "Алексей");
   assert.equal(state.settings.mascotId, "05_laptop_spiky");
-  assert.equal(state.settings.workspaceRuntime, "code-server");
-  assert.equal(state.settings.workspaceRuntimeUrl, `http://127.0.0.1:${agentPort}`);
-  assert.equal(state.settings.agentRuntimeUrl, `http://127.0.0.1:${agentPort}`);
+  assert.equal(state.settings.workspaceRuntime, undefined);
+  assert.equal(state.settings.workspaceRuntimeUrl, undefined);
+  assert.equal(state.settings.agentRuntimeUrl, undefined);
   assert.equal(state.settings.graphMemoryUrl, `http://127.0.0.1:${graphPort}`);
   assert.equal(state.settings.sandboxCpuTimeSec, "2");
   assert.equal(state.settings.sandboxMemoryMb, "256");
@@ -1165,7 +1039,6 @@ try {
 } finally {
   if (modelServer) await new Promise((resolve) => modelServer.close(resolve));
   if (graphServer) await new Promise((resolve) => graphServer.close(resolve));
-  if (agentServer) await new Promise((resolve) => agentServer.close(resolve));
   if (judgeServer) await new Promise((resolve) => judgeServer.close(resolve));
   await rm(tmp, { recursive: true, force: true });
 }
@@ -1180,8 +1053,6 @@ async function startServer({ seed, dbPath, port }) {
       CODELEARN_DB_PATH: dbPath,
       CODELEARN_ENV_PATH: envPath,
       CODELEARN_WORKSPACE_ROOT: workspaceRoot,
-      WORKSPACE_RUNTIME_URL: `http://127.0.0.1:${agentPort}`,
-      AGENT_RUNTIME_URL: `http://127.0.0.1:${agentPort}`,
       GRAPH_MEMORY_URL: `http://127.0.0.1:${graphPort}`,
       JUDGE0_BASE_URL: `http://127.0.0.1:${judgePort}`,
       OPENROUTER_API_KEY: "sk-test-secret",
@@ -1272,49 +1143,25 @@ async function startJudgeServer(port, receivedSubmissions) {
       return;
     }
     assert.equal(req.method, "POST");
-    assert.equal(req.url, "/submissions?base64_encoded=false&wait=true");
+    assert.equal(req.url, "/submissions?base64_encoded=true&wait=true");
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     receivedSubmissions.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({
-      stdout: JSON.stringify({
+      stdout: Buffer.from(JSON.stringify({
         status: "passed",
         stdout: "",
         stderr: "",
         public_test_results: [{ name: "арифметика работает", passed: true, message: "прошла" }],
         hidden_test_summary: "Скрытые проверки не раскрываются.",
         category: "accepted"
-      }),
+      }), "utf8").toString("base64"),
       stderr: "",
       time: "0.01",
       memory: 1024,
       status: { description: "Accepted" }
     }));
-  });
-  await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
-  return server;
-}
-
-async function startAgentServer(port, receivedCommands) {
-  const server = createServer(async (req, res) => {
-    if (req.method === "GET" && req.url === "/health") {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
-    if (req.method === "GET") {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end("ok");
-      return;
-    }
-    assert.equal(req.method, "POST");
-    assert.equal(req.url, "/commands");
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    receivedCommands.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ status: "queued" }));
   });
   await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
   return server;

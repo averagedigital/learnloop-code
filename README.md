@@ -47,7 +47,6 @@ npm start
 - `CODELEARN_SEED_DEV_DATA` - `true` только для локального bootstrap.
 - `JUDGE0_BASE_URL` - внешний sandbox endpoint для `/api/execute`.
 - `GRAPH_MEMORY_URL` - URL опционального graph memory service.
-- `WORKSPACE_RUNTIME_URL`, `AGENT_RUNTIME_URL` - URL опционального workspace и agent runtime.
 
 
 ## Раздельный запуск для разработки
@@ -81,18 +80,6 @@ docker run --rm -p 4173:4173 -v codelearn-data:/data -v codelearn-workspace:/app
 Container хранит runtime `.env`, SQLite data и personality memory в `/data`.
 
 ## Опциональные runtime services
-
-Workspace и agent runtime:
-
-```sh
-npm run runtime:workspace
-```
-
-Изолированный runtime для одной задачи:
-
-```sh
-CODELEARN_PROJECT_ID=task-id npm run runtime:project
-```
 
 Graph memory runtime:
 
@@ -128,8 +115,6 @@ npm run build
 - `POST /api/tasks/:id/runs` - сохранение результата запуска задачи.
 - `GET /api/workspace/tasks/:taskId/files` - список workspace-файлов задачи.
 - `GET /api/workspace/tasks/:taskId/files/:path` - чтение workspace-файла задачи.
-- `GET|PATCH /api/workspace/tasks/:taskId/agent/files/:path` - чтение/запись agent-scoped файлов задачи.
-- `POST /api/workspace/tasks/:taskId/agent/run` - передача команды во внешний agent runtime.
 - `GET|POST /api/memory/events` - чтение/создание memory review events.
 - `PATCH /api/memory/events/:id` - обновление review status memory event.
 - `POST /api/memory/graph-sync` - синхронизация accepted memory events в graph memory service.

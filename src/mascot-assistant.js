@@ -1,4 +1,4 @@
-const DEFAULT_SETTINGS = { size: 118 };
+const DEFAULT_SETTINGS = { size: 118, dialogWidth: 440, dialogHeight: 620 };
 const MIN_SIZE = 82;
 const MAX_SIZE = 190;
 const EDGE = 12;
@@ -12,6 +12,8 @@ let loading = false;
 let errorText = "";
 let lastQuestion = "";
 let activeController;
+let dialogResizeObserver;
+let dialogSaveTimer;
 
 const SURFACES = new Set(["chat", "test", "task", "settings", "graph-memory"]);
 
@@ -35,10 +37,14 @@ export function clampMascotSettings(settings = {}, viewport = {}) {
   const occupiedWidth = size;
   const occupiedHeight = size;
   const minX = desktop ? 112 : EDGE;
+  const maxDialogWidth = Math.max(1, width - EDGE * 2);
+  const maxDialogHeight = Math.max(1, height - EDGE * 2);
   return {
     x: clamp(Number(settings.x) || minX, minX, Math.max(minX, width - occupiedWidth - EDGE)),
     y: clamp(Number(settings.y) || EDGE, EDGE, Math.max(EDGE, height - occupiedHeight - EDGE)),
-    size
+    size,
+    dialogWidth: clamp(Number(settings.dialogWidth) || DEFAULT_SETTINGS.dialogWidth, Math.min(320, maxDialogWidth), maxDialogWidth),
+    dialogHeight: clamp(Number(settings.dialogHeight) || DEFAULT_SETTINGS.dialogHeight, Math.min(420, maxDialogHeight), maxDialogHeight)
   };
 }
 
@@ -225,15 +231,18 @@ function renderWidget() {
   widget.root.style.setProperty("--mascot-frame-steps", Math.max(1, iconFrames.length - 1));
   widget.root.style.setProperty("--mascot-x", `${widget.settings.x}px`);
   widget.root.style.setProperty("--mascot-y", `${widget.settings.y}px`);
+  widget.root.style.setProperty("--mascot-dialog-width", `${widget.settings.dialogWidth}px`);
+  widget.root.style.setProperty("--mascot-dialog-height", `${widget.settings.dialogHeight}px`);
   widget.root.innerHTML = `
     <button class="mascotAssistantBubble" type="button" aria-label="Открыть AI-наставника. Стрелки перемещают маскота" aria-expanded="${widget.open}" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Enter Space">
       <span class="mascotAssistantIcon" aria-hidden="true">
         ${iconFrames.map((frame) => `<img src="${latestOptions.mascotFrameBase}/frame_${frame}.png" alt="">`).join("")}
       </span>
     </button>
-    <button class="mascotAssistantResize" type="button" aria-label="Изменить размер маскота стрелками" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"></button>
+    <button class="mascotAssistantResize" type="button" aria-label="Изменить размер маскота стрелками" aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2H2v4M10 14h4v-4M2.5 5.5l4-4M13.5 10.5l-4 4"></path></svg></button>
     ${widget.open ? renderDialog() : ""}
   `;
+  watchDialogSize();
 }
 
 function getIconFrames() {
@@ -242,33 +251,19 @@ function getIconFrames() {
 }
 
 function renderDialog() {
-  const assistantUrl = externalAssistantUrl();
   const contextLabel = mascotContextLabel(normalizeMascotContext(latestOptions.getPageContext()));
-  const placement = window.innerWidth <= 720
-    ? "mobile"
-    : `${widget.settings.x + widget.settings.size + 424 <= window.innerWidth ? "right" : "left"} ${widget.settings.y > window.innerHeight / 2 ? "bottom" : "top"}`;
-  if (assistantUrl) {
-    return `
-      <aside class="mascotAssistantDialog agent ${placement}" role="dialog" aria-label="OpenHands agent">
-        <header>
-          <div><strong>OpenHands</strong><span>${escapeHtml(contextLabel)}</span></div>
-          <a href="${escapeAttr(assistantUrl)}" target="_blank" rel="noopener noreferrer">Открыть</a>
-          <button type="button" data-mascot-close aria-label="Закрыть">×</button>
-        </header>
-        <iframe class="mascotAssistantAgentFrame" title="OpenHands agent" src="${escapeAttr(assistantUrl)}"></iframe>
-      </aside>
-    `;
-  }
+  const mobile = window.innerWidth <= 720;
+  const side = widget.settings.x + widget.settings.size + widget.settings.dialogWidth + 14 <= window.innerWidth - EDGE ? "right" : "left";
+  const dialogLeft = clamp(side === "right" ? widget.settings.x + widget.settings.size + 14 : widget.settings.x - widget.settings.dialogWidth - 14, EDGE, Math.max(EDGE, window.innerWidth - widget.settings.dialogWidth - EDGE));
+  const dialogTop = clamp(widget.settings.y, EDGE, Math.max(EDGE, window.innerHeight - widget.settings.dialogHeight - EDGE));
+  const dialogStyle = mobile ? "" : ` style="left:${dialogLeft}px;top:${dialogTop}px;--dialog-max-width:${window.innerWidth - dialogLeft - EDGE}px;--dialog-max-height:${window.innerHeight - dialogTop - EDGE}px"`;
   return `
-    <aside class="mascotAssistantDialog ${placement}" role="dialog" aria-label="AI-наставник">
+    <aside class="mascotAssistantDialog ${mobile ? "mobile" : side}"${dialogStyle} role="dialog" aria-label="AI-наставник">
       <header>
         <div><strong>AI-наставник</strong><span>${escapeHtml(contextLabel)}</span></div>
         <button type="button" data-mascot-close aria-label="Закрыть">×</button>
       </header>
-      <div class="mascotAssistantMessages">
-        ${messages.length ? messages.map(renderMessage).join("") : `<div class="mascotAssistantEmpty">Спросите по текущей задаче, коду или экрану.</div>`}
-        ${errorText ? `<div class="mascotAssistantError">${escapeHtml(errorText)} <button type="button" data-mascot-retry>Повторить</button></div>` : ""}
-      </div>
+      <div class="mascotAssistantMessages">${renderMessages()}</div>
       <form class="mascotAssistantForm chatComposer composerGlass">
         <textarea rows="3" name="question" placeholder="Например: почему этот тест падает?">${escapeHtml(pendingQuestion)}</textarea>
         <button type="${loading ? "button" : "submit"}" ${loading ? "data-mascot-cancel" : ""} aria-label="${loading ? "Остановить ответ" : "Отправить сообщение"}">
@@ -277,6 +272,45 @@ function renderDialog() {
       </form>
     </aside>
   `;
+}
+
+function renderMessages() {
+  return `${messages.length ? messages.map(renderMessage).join("") : `<div class="mascotAssistantEmpty">Спросите по текущей задаче, коду или экрану.</div>`}${errorText ? `<div class="mascotAssistantError">${escapeHtml(errorText)} <button type="button" data-mascot-retry>Повторить</button></div>` : ""}`;
+}
+
+function refreshDialog() {
+  const container = widget.root.querySelector(".mascotAssistantMessages");
+  if (!container) return renderWidget();
+  const stickToBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 48;
+  container.innerHTML = renderMessages();
+  if (stickToBottom) container.scrollTop = container.scrollHeight;
+  const button = widget.root.querySelector(".mascotAssistantForm button");
+  if (button && button.hasAttribute("data-mascot-cancel") !== loading) {
+    button.type = loading ? "button" : "submit";
+    button.toggleAttribute("data-mascot-cancel", loading);
+    button.setAttribute("aria-label", loading ? "Остановить ответ" : "Отправить сообщение");
+    button.innerHTML = loading ? `<span class="stopStreamIcon" aria-hidden="true"></span>` : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 17 10-10M8 7h9v9"></path></svg>`;
+  }
+}
+
+function watchDialogSize() {
+  dialogResizeObserver?.disconnect();
+  const dialog = widget.root.querySelector(".mascotAssistantDialog");
+  if (!dialog || window.innerWidth <= 720) return;
+  let initial = true;
+  dialogResizeObserver = new ResizeObserver(([entry]) => {
+    if (initial) {
+      initial = false;
+      return;
+    }
+    const dialogWidth = Math.round(entry.contentRect.width);
+    const dialogHeight = Math.round(entry.contentRect.height);
+    if (dialogWidth === widget.settings.dialogWidth && dialogHeight === widget.settings.dialogHeight) return;
+    widget.settings = { ...widget.settings, dialogWidth, dialogHeight };
+    clearTimeout(dialogSaveTimer);
+    dialogSaveTimer = setTimeout(saveSettings, 180);
+  });
+  dialogResizeObserver.observe(dialog);
 }
 
 function renderMessage(message) {
@@ -409,7 +443,7 @@ function clampWidget(shouldRender = true) {
     widget.root.style.setProperty("--mascot-x", `${widget.settings.x}px`);
     widget.root.style.setProperty("--mascot-y", `${widget.settings.y}px`);
   }
-  return previous.x !== widget.settings.x || previous.y !== widget.settings.y || previous.size !== widget.settings.size;
+  return previous.x !== widget.settings.x || previous.y !== widget.settings.y || previous.size !== widget.settings.size || previous.dialogWidth !== widget.settings.dialogWidth || previous.dialogHeight !== widget.settings.dialogHeight;
 }
 
 function handleViewportResize() {
@@ -437,7 +471,7 @@ async function sendQuestion(rawQuestion) {
       onEvent(event) {
         streamed = updateStreamedMessage(streamed, event);
         messages[messages.length - 1] = streamed;
-        renderWidget();
+        refreshDialog();
       }
     });
     messages[messages.length - 1] = { ...streamed, ...answer, role: "assistant", streaming: false };
@@ -447,7 +481,7 @@ async function sendQuestion(rawQuestion) {
   } finally {
     activeController = undefined;
     loading = false;
-    renderWidget();
+    refreshDialog();
   }
 }
 
@@ -474,16 +508,11 @@ function closeDialog() {
   renderWidget();
 }
 
-function externalAssistantUrl() {
-  const url = String(latestOptions.openAssistantUrl || "").trim();
-  return url || "";
-}
-
 function openAssistant() {
   widget.open = true;
   renderWidget();
   clampWidget();
-  if (!externalAssistantUrl()) requestAnimationFrame(() => widget.root.querySelector("textarea")?.focus());
+  requestAnimationFrame(() => widget.root.querySelector("textarea")?.focus());
 }
 
 function loadSettings(settings) {
@@ -583,18 +612,15 @@ function injectMascotAssistantStyles() {
     .mascotAssistantBubble:hover{transform:translateY(-2px) scale(1.02);box-shadow:none}
     .mascotAssistantIcon{width:calc(var(--mascot-frame-count,12) * 100%);height:100%;display:grid;grid-template-columns:repeat(var(--mascot-frame-count,12),1fr);pointer-events:none;animation:mascotAssistantFrames 2.4s steps(var(--mascot-frame-steps,11)) infinite}
     .mascotAssistantIcon img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated}
-    .mascotAssistantResize{position:absolute;right:-4px;bottom:-4px;width:22px;height:22px;border-radius:50%;background:var(--chat-text);border:2px solid var(--chat-bg);box-shadow:0 4px 16px rgba(0,0,0,.28);touch-action:none}
-    .mascotAssistantResize::before{content:"";position:absolute;inset:6px;border-right:2px solid white;border-bottom:2px solid white}
-    .mascotAssistantDialog{position:absolute;width:min(392px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 32px));display:grid;grid-template-rows:auto minmax(0,1fr) auto;background:rgba(13,17,22,.98);border:1px solid var(--chat-line-strong);border-radius:12px;box-shadow:0 24px 64px rgba(0,0,0,.42);overflow:hidden;color:var(--chat-text);animation:mascotDialogIn .18s var(--ease)}
-    .mascotAssistantDialog.right{left:calc(100% + 14px)}.mascotAssistantDialog.left{right:calc(100% + 14px)}.mascotAssistantDialog.top{top:0}.mascotAssistantDialog.bottom{bottom:0}
-    .mascotAssistantDialog.agent{width:min(760px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));grid-template-rows:auto minmax(0,1fr);background:#fff}
+    .mascotAssistantResize{position:absolute;right:-4px;bottom:-4px;width:24px;height:24px;padding:4px;border-radius:50%;background:var(--chat-text);color:var(--chat-bg);border:2px solid var(--chat-bg);box-shadow:0 4px 16px rgba(0,0,0,.28);touch-action:none}
+    .mascotAssistantResize svg{display:block;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+    .mascotAssistantDialog{position:fixed;width:min(var(--mascot-dialog-width),var(--dialog-max-width,calc(100vw - 24px)));height:min(var(--mascot-dialog-height),var(--dialog-max-height,calc(100vh - 24px)));min-width:min(320px,calc(100vw - 24px));min-height:min(420px,calc(100vh - 24px));resize:both;display:grid;grid-template-rows:auto minmax(0,1fr) auto;background:rgba(13,17,22,.98);border:1px solid var(--chat-line);border-radius:12px;box-shadow:0 24px 64px rgba(0,0,0,.42);overflow:hidden;color:var(--chat-text);animation:mascotDialogIn .18s var(--ease)}
     .mascotAssistantDialog header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px;border-bottom:1px solid var(--chat-line);background:rgba(255,255,255,.025)}
     .mascotAssistantDialog header strong,.mascotAssistantDialog header span{display:block}
     .mascotAssistantDialog header strong{color:var(--chat-text)}
     .mascotAssistantDialog header span{color:var(--chat-muted);font-size:12px}
     .mascotAssistantDialog header a{color:var(--chat-accent);font-weight:800;text-decoration:none}
     .mascotAssistantDialog header button{width:34px;height:34px;padding:0;border-radius:50%;font-size:20px}
-    .mascotAssistantAgentFrame{width:100%;height:100%;border:0;background:#fff}
     .mascotAssistantMessages{overflow:auto;padding:14px;display:grid;align-content:start;gap:10px}
     .mascotAssistantMessage{word-break:break-word}
     .mascotAssistantMessage.user{max-width:88%;padding:10px 12px;border-radius:14px 14px 4px 14px}
@@ -605,11 +631,12 @@ function injectMascotAssistantStyles() {
     .mascotAssistantEmpty,.mascotAssistantError{padding:12px;border-radius:8px;background:rgba(255,255,255,.05);color:var(--chat-muted)}
     .mascotAssistantError{background:rgba(225,144,121,.12);color:#e19079}
     .mascotAssistantForm{margin:12px}
+    .mascotAssistantForm:focus-within{border-color:var(--chat-line);box-shadow:none;transform:none}
     .mascotAssistantForm textarea{min-height:54px;font-size:14px}
     .mascotAssistantForm button svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
     @keyframes mascotDialogIn{from{opacity:0;transform:translateY(6px) scale(.98)}to{opacity:1;transform:none}}
     @keyframes mascotAssistantFrames{to{transform:translateX(calc(-100% + (100% / var(--mascot-frame-count,12))))}}
-    @media (max-width:720px){.mascotAssistant{gap:8px;z-index:73}.mascotAssistantBubble{width:min(var(--mascot-size),76px);height:min(var(--mascot-size),76px)}.mascotAssistantResize{width:18px;height:18px}.mascotAssistantResize::before{inset:5px}.mascotAssistantDialog{position:fixed;left:12px;bottom:12px;width:calc(100vw - 24px);max-height:calc(100vh - 24px)}.mascotAssistantForm{grid-template-columns:1fr}}
+    @media (max-width:720px){.mascotAssistant{gap:8px;z-index:73}.mascotAssistantBubble{width:min(var(--mascot-size),76px);height:min(var(--mascot-size),76px)}.mascotAssistantResize{width:20px;height:20px}.mascotAssistantDialog{position:fixed;left:12px!important;top:auto!important;bottom:12px;width:calc(100vw - 24px);height:min(620px,calc(100vh - 24px));min-width:0;min-height:0;resize:none}.mascotAssistantForm{grid-template-columns:1fr}}
     @media (prefers-reduced-motion:reduce){.mascotAssistant *{animation:none!important;transition:none!important}}
   `;
   document.head.append(style);

@@ -12,10 +12,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "runtime:workspace": "docker compose -f docker-compose.workspace.yml up code-server openhands",
-    "runtime:project": "test -n \"$CODELEARN_PROJECT_ID\" && CODELEARN_WORKSPACE_MOUNT=\"${CODELEARN_WORKSPACE_ROOT:-./workspace}/$CODELEARN_PROJECT_ID\" CODELEARN_WORKSPACE_CONTAINER_PATH=\"/workspaces/$CODELEARN_PROJECT_ID\" docker compose -f docker-compose.workspace.yml up code-server openhands",
     "runtime:memory": "docker compose -f docker-compose.workspace.yml up falkordb graph-memory",
-    "runtime:all": "docker compose -f docker-compose.workspace.yml up -d --build code-server openhands falkordb graph-memory",
+    "runtime:all": "docker compose -f docker-compose.workspace.yml up -d --build --remove-orphans falkordb graph-memory",
     "runtime:down": "docker compose -f docker-compose.workspace.yml down",
     "test": "node tests/self-check.mjs && node tests/persistence-api-check.mjs && node tests/chat-tool-loop-check.mjs && node tests/chat-stream-check.mjs && node tests/coding-task-check.mjs && python3 tests/memory-service-check.py"
   },
@@ -24,7 +22,15 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.6",
+    "@lezer/highlight": "^1.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "codemirror": "^6.0.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "vite": "^8.1.2"

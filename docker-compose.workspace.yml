@@ -1,27 +1,4 @@
 services:
-  code-server:
-    image: codercom/code-server:latest
-    command: --auth none "${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
-    ports:
-      - "${CODE_SERVER_PORT:-8080}:8080"
-    volumes:
-      - "${CODELEARN_WORKSPACE_MOUNT:-./workspace}:${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
-    environment:
-      PASSWORD: ""
-
-  openhands:
-    image: ghcr.io/all-hands-ai/openhands:latest
-    ports:
-      - "${OPENHANDS_PORT:-3000}:3000"
-    volumes:
-      - "${CODELEARN_WORKSPACE_MOUNT:-./workspace}:${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
-    environment:
-      SANDBOX_WORKSPACE_BASE: "${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
-      WORKSPACE_MOUNT_PATH: "${CODELEARN_WORKSPACE_CONTAINER_PATH:-/workspaces}"
-      LLM_API_KEY: "${YANDEX_AI_STUDIO_API_KEY:-}"
-      LLM_MODEL: "${OPENHANDS_LLM_MODEL:-}"
-      LLM_BASE_URL: "${YANDEX_AI_STUDIO_BASE_URL:-https://ai.api.cloud.yandex.net/v1}"
-
   falkordb:
     image: falkordb/falkordb-server:latest
     ports:

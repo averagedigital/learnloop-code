@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { chmod, readFile, writeFile, mkdir, readdir, lstat, realpath } from "node:fs/promises";
+import { chmod, readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -37,7 +37,7 @@ const graphSettingEnv = {
   graphEmbeddingModel: "GRAPH_EMBEDDING_MODEL",
   graphEmbeddingDim: "GRAPH_EMBEDDING_DIM"
 };
-const runtimeComposeArgs = ["compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build", "code-server", "openhands", "falkordb", "graph-memory"];
+const runtimeComposeArgs = ["compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build", "--remove-orphans", "falkordb", "graph-memory"];
 const mascotIds = new Set(["organic_spiky_concept", "05_laptop_spiky"]);
 const memoryEventKinds = new Set(["coding_habit", "weak_topic", "strong_topic", "skill_observation", "response_preference", "project_reference"]);
 const autonomousMemoryKinds = {
@@ -75,8 +75,6 @@ createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname.startsWith("/api/tasks/") && url.pathname.endsWith("/log")) return await taskLog(req, res, url);
     if (req.method === "POST" && url.pathname.startsWith("/api/tasks/") && url.pathname.endsWith("/runs")) return await taskRun(req, res, url);
     if (req.method === "POST" && url.pathname.startsWith("/api/tasks/") && url.pathname.endsWith("/execute")) return await taskExecute(req, res, url);
-    if (url.pathname.startsWith("/api/workspace/tasks/") && url.pathname.includes("/agent/files")) return await workspaceAgentFiles(req, res, url);
-    if (req.method === "POST" && url.pathname.startsWith("/api/workspace/tasks/") && url.pathname.endsWith("/agent/run")) return await workspaceAgentRun(req, res, url);
     if (req.method === "GET" && url.pathname.startsWith("/api/workspace/tasks/") && url.pathname.endsWith("/files")) return await workspaceFiles(req, res, url);
     if (req.method === "GET" && url.pathname.startsWith("/api/workspace/tasks/") && url.pathname.includes("/files/")) return await workspaceFileContent(req, res, url);
     if (req.method === "PATCH" && url.pathname.startsWith("/api/tasks/") && url.pathname.endsWith("/progress")) return await taskProgress(req, res, url);
@@ -468,9 +466,6 @@ async function appSettings(req, res) {
     "profileName",
     "mascotId",
     "mascotAssistantSettings",
-    "workspaceRuntime",
-    "workspaceRuntimeUrl",
-    "agentRuntimeUrl",
     "graphMemoryUrl",
     ...Object.keys(graphSettingEnv),
     "sandboxCpuTimeSec",
@@ -484,9 +479,6 @@ async function appSettings(req, res) {
   if (body.mascotId !== undefined && !mascotIds.has(String(body.mascotId))) return sendJson(res, 400, { error: "invalid_mascot_id" });
   if (body.mascotAssistantSettings !== undefined && !validMascotSettings(body.mascotAssistantSettings)) return sendJson(res, 400, { error: "invalid_mascot_settings" });
   if (body.providerBaseUrl !== undefined && String(body.providerBaseUrl).trim() && !httpServiceUrl(body.providerBaseUrl)) return sendJson(res, 400, { error: "invalid_provider_url" });
-  if (body.workspaceRuntime !== undefined && !["code-server", "openvscode-server"].includes(String(body.workspaceRuntime))) return sendJson(res, 400, { error: "invalid_workspace_runtime" });
-  if (body.workspaceRuntimeUrl !== undefined && String(body.workspaceRuntimeUrl).trim() && !httpServiceUrl(body.workspaceRuntimeUrl)) return sendJson(res, 400, { error: "invalid_workspace_runtime_url" });
-  if (body.agentRuntimeUrl !== undefined && String(body.agentRuntimeUrl).trim() && !httpServiceUrl(body.agentRuntimeUrl)) return sendJson(res, 400, { error: "invalid_agent_runtime_url" });
   if (body.graphMemoryUrl !== undefined && String(body.graphMemoryUrl).trim() && !httpServiceUrl(body.graphMemoryUrl)) return sendJson(res, 400, { error: "invalid_graph_memory_url" });
   if (body.graphEmbeddingProvider !== undefined && !["auto", ...Object.keys(graphProviderEnv)].includes(String(body.graphEmbeddingProvider))) return sendJson(res, 400, { error: "invalid_graph_embedding_provider" });
   if (body.graphEmbeddingBaseUrl !== undefined && String(body.graphEmbeddingBaseUrl).trim() && !httpServiceUrl(body.graphEmbeddingBaseUrl)) return sendJson(res, 400, { error: "invalid_graph_embedding_url" });
@@ -1076,17 +1068,13 @@ async function runtimeHealth(_req, res) {
 }
 
 async function readRuntimeHealth() {
-  const workspaceUrl = readSetting("workspaceRuntimeUrl") || process.env.WORKSPACE_RUNTIME_URL || "http://127.0.0.1:8080";
-  const agentUrl = readSetting("agentRuntimeUrl") || process.env.AGENT_RUNTIME_URL || "http://127.0.0.1:3000";
   const judgeUrl = judge0BaseUrl();
   const graphUrl = graphMemoryBaseUrl();
-  const [workspace, agent, judge, graph] = await Promise.all([
-    runtimeProbe("workspace", workspaceUrl, ""),
-    runtimeProbe("agent", agentUrl, "/health"),
+  const [judge, graph] = await Promise.all([
     runtimeProbe("judge0", judgeUrl, ""),
     runtimeProbe("graphMemory", graphUrl, "/health")
   ]);
-  return { ok: [workspace, agent, judge, graph].every((item) => !item.configured || item.ok), workspace, agent, judge, graph };
+  return { ok: [judge, graph].every((item) => !item.configured || item.ok), judge, graph };
 }
 
 function judge0BaseUrl() {
@@ -2349,116 +2337,6 @@ function solutionFileName(language) {
   return language === "javascript" ? "solution.js" : "solution.py";
 }
 
-async function workspaceAgentFiles(req, res, url) {
-  const { taskId, fileName } = agentFileRoute(url);
-  if (!db.prepare("SELECT 1 FROM tasks WHERE id = ?").get(taskId)) return sendJson(res, 404, { error: "task_not_found" });
-  if (!fileName && req.method === "GET") {
-    const dir = await writeWorkspaceFiles(taskId);
-    return sendJson(res, 200, { files: await listWorkspaceFiles(dir) });
-  }
-  if (!fileName) return sendJson(res, 400, { error: "missing_agent_file" });
-  let file;
-  try {
-    file = safeWorkspaceFilePath(taskId, fileName);
-  } catch (error) {
-    return sendJson(res, 403, { error: error.message });
-  }
-  if (req.method === "GET") {
-    try {
-      await assertWorkspaceRealPath(taskId, file, { allowMissingParent: true });
-      return sendJson(res, 200, { name: fileName, content: await readFile(file, "utf8") });
-    } catch (error) {
-      if (error?.message === "workspace_path_escape") return sendJson(res, 403, { error: error.message });
-      if (error?.code === "ENOENT") return sendJson(res, 404, { error: "workspace_file_not_found" });
-      throw error;
-    }
-  }
-  if (req.method === "PATCH") {
-    const body = await readJson(req);
-    if (typeof body.content !== "string") return sendJson(res, 400, { error: "invalid_agent_file_content" });
-    const content = body.content;
-    if (content.length > 200000) return sendJson(res, 413, { error: "agent_file_too_large" });
-    await mkdir(dirname(file), { recursive: true });
-    try {
-      await assertWorkspaceRealPath(taskId, file);
-    } catch (error) {
-      if (error?.message === "workspace_path_escape") return sendJson(res, 403, { error: error.message });
-      throw error;
-    }
-    await writeFile(file, content, "utf8");
-    const taskLanguage = db.prepare("SELECT language FROM tasks WHERE id = ?").get(taskId)?.language || "python";
-    if (fileName === solutionFileName(taskLanguage)) {
-      const current = db.prepare("SELECT hint_index AS hintIndex FROM task_progress WHERE task_id = ?").get(taskId) || {};
-      const updatedAt = new Date().toISOString();
-      db.prepare(`INSERT INTO task_progress (task_id, code, hint_index, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(task_id) DO UPDATE SET code = excluded.code, updated_at = excluded.updated_at`)
-        .run(taskId, content, Number(current.hintIndex || 0), updatedAt);
-    }
-    recordWorkspaceFileSave(taskId, fileName);
-    return sendJson(res, 200, { ok: true, name: fileName });
-  }
-  sendJson(res, 405, { error: "method_not_allowed" });
-}
-
-function recordWorkspaceFileSave(taskId, fileName) {
-  const now = new Date().toISOString();
-  const runId = crypto.randomUUID();
-  db.prepare("INSERT INTO task_runs (id, task_id, status, final_result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(runId, taskId, "file_saved", fileName, now, now);
-  db.prepare("INSERT INTO agent_events (run_id, type, payload, created_at) VALUES (?, ?, ?, ?)")
-    .run(runId, "workspace_file_saved", JSON.stringify({ name: fileName }), now);
-}
-
-async function workspaceAgentRun(req, res, url) {
-  const taskId = decodeURIComponent(url.pathname.slice("/api/workspace/tasks/".length, -"/agent/run".length));
-  if (!db.prepare("SELECT 1 FROM tasks WHERE id = ?").get(taskId)) return sendJson(res, 404, { error: "task_not_found" });
-  const agentRuntimeUrl = readSetting("agentRuntimeUrl") || process.env.AGENT_RUNTIME_URL || "";
-  if (!agentRuntimeUrl) return sendJson(res, 400, { error: "missing_agent_runtime_url" });
-  const body = await readJson(req);
-  if (!Array.isArray(body.command) || body.command.some((part) => typeof part !== "string" || !part)) return sendJson(res, 400, { error: "invalid_agent_command" });
-  const command = body.command;
-  if (command.length === 0) return sendJson(res, 400, { error: "invalid_agent_command" });
-  if (command.length > 16 || command.some((part) => part.length > 200)) return sendJson(res, 400, { error: "agent_command_too_long" });
-  const runtimeUrl = httpServiceUrl(agentRuntimeUrl);
-  if (!runtimeUrl) return sendJson(res, 400, { error: "invalid_agent_runtime_url" });
-  await writeWorkspaceFiles(taskId);
-  try {
-    const result = await fetchJson(`${runtimeUrl}/commands`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ command, cwd: `/workspaces/${safeWorkspaceTaskId(taskId)}` })
-    });
-    recordWorkspaceAgentRun(taskId, command, result);
-    return sendJson(res, 200, { ok: true, result });
-  } catch (error) {
-    recordWorkspaceAgentRun(taskId, command, { status: "agent_runtime_unreachable", error: error.message }, "agent_command_failed");
-    return sendJson(res, 502, { error: "agent_runtime_unreachable", message: error.message });
-  }
-}
-
-function recordWorkspaceAgentRun(taskId, command, result, eventType = "agent_command") {
-  const now = new Date().toISOString();
-  const runId = crypto.randomUUID();
-  const resultStatus = String(result?.status || "agent_run");
-  db.prepare("INSERT INTO task_runs (id, task_id, status, final_result, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(runId, taskId, resultStatus, resultStatus, now, now);
-  db.prepare("INSERT INTO agent_events (run_id, type, payload, created_at) VALUES (?, ?, ?, ?)")
-    .run(runId, eventType, JSON.stringify({ command, resultStatus }), now);
-}
-
-function agentFileRoute(url) {
-  const prefix = "/api/workspace/tasks/";
-  const marker = "/agent/files";
-  const rest = url.pathname.slice(prefix.length);
-  const markerIndex = rest.indexOf(marker);
-  const taskId = decodeURIComponent(rest.slice(0, markerIndex));
-  const fileName = rest.length > markerIndex + marker.length + 1
-    ? decodeURIComponent(rest.slice(markerIndex + marker.length + 1))
-    : "";
-  return { taskId, fileName };
-}
-
 async function listWorkspaceFiles(dir, base = "") {
   const entries = await readdir(join(dir, base), { withFileTypes: true });
   const files = [];
@@ -2476,26 +2354,6 @@ function safeWorkspaceFilePath(taskId, fileName) {
   const file = normalize(join(dir, String(fileName || "")));
   if (!file.startsWith(`${dir}/`)) throw new Error("workspace_path_escape");
   return file;
-}
-
-async function assertWorkspaceRealPath(taskId, file, options = {}) {
-  const realDir = await realpath(safeWorkspaceTaskDir(taskId));
-  let realParent;
-  try {
-    realParent = await realpath(dirname(file));
-  } catch (error) {
-    if (options.allowMissingParent && error?.code === "ENOENT") return;
-    throw error;
-  }
-  if (!realParent.startsWith(`${realDir}/`) && realParent !== realDir) throw new Error("workspace_path_escape");
-  try {
-    const stat = await lstat(file);
-    if (stat.isSymbolicLink()) throw new Error("workspace_path_escape");
-    const realFile = await realpath(file);
-    if (!realFile.startsWith(`${realDir}/`)) throw new Error("workspace_path_escape");
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
 }
 
 function safeWorkspaceTaskId(taskId) {
@@ -2551,12 +2409,12 @@ async function runSandbox(source, publicChecks, limits = {}) {
   const languageId = language === "javascript"
     ? Number(process.env.JUDGE0_JAVASCRIPT_LANGUAGE_ID || 63)
     : Number(process.env.JUDGE0_PYTHON_LANGUAGE_ID || 71);
-  const data = await fetchJson(`${sandboxUrl}/submissions?base64_encoded=false&wait=true`, {
+  const data = await fetchJson(`${sandboxUrl}/submissions?base64_encoded=true&wait=true`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       language_id: languageId,
-      source_code: sandboxScript(source, publicChecks, language),
+      source_code: Buffer.from(sandboxScript(source, publicChecks, language), "utf8").toString("base64"),
       cpu_time_limit: cpuTimeSec,
       wall_time_limit: wallTimeSec,
       memory_limit: memoryKb,
@@ -2565,7 +2423,17 @@ async function runSandbox(source, publicChecks, limits = {}) {
       enable_network: String(process.env.SANDBOX_NETWORK_ENABLED || "false") === "true"
     })
   });
-  return parseSandboxResult(data);
+  return parseSandboxResult({
+    ...data,
+    stdout: decodeBase64Text(data.stdout),
+    stderr: decodeBase64Text(data.stderr),
+    compile_output: decodeBase64Text(data.compile_output),
+    message: decodeBase64Text(data.message)
+  });
+}
+
+function decodeBase64Text(value) {
+  return typeof value === "string" && value ? Buffer.from(value, "base64").toString("utf8") : "";
 }
 
 function validPublicChecks(checks) {
@@ -2742,6 +2610,9 @@ function readSetting(key) {
 function readSettings() {
   const stored = Object.fromEntries(db.prepare("SELECT key, value FROM settings").all().map((row) => [row.key, row.value]));
   const {
+    workspaceRuntime: _workspaceRuntime,
+    workspaceRuntimeUrl: _workspaceRuntimeUrl,
+    agentRuntimeUrl: _agentRuntimeUrl,
     graphProvider: _graphProvider,
     graphLlmBaseUrl: _graphLlmBaseUrl,
     graphLlmModel: _graphLlmModel,
@@ -2751,9 +2622,6 @@ function readSettings() {
   } = stored;
   return {
     ...visible,
-    workspaceRuntime: stored.workspaceRuntime || "code-server",
-    workspaceRuntimeUrl: stored.workspaceRuntimeUrl || process.env.WORKSPACE_RUNTIME_URL || "http://127.0.0.1:8080",
-    agentRuntimeUrl: stored.agentRuntimeUrl || process.env.AGENT_RUNTIME_URL || "http://127.0.0.1:3000",
     graphMemoryUrl: stored.graphMemoryUrl || process.env.GRAPH_MEMORY_URL || "http://127.0.0.1:8008",
     graphEmbeddingProvider: stored.graphEmbeddingProvider || stored.graphProvider || process.env.GRAPH_EMBEDDING_PROVIDER || process.env.GRAPHITI_LLM_PROVIDER || "openrouter",
     graphEmbeddingBaseUrl: stored.graphEmbeddingBaseUrl || process.env.GRAPH_EMBEDDING_BASE_URL || process.env.GRAPHITI_EMBEDDING_BASE_URL || "https://openrouter.ai/api/v1",
