@@ -667,7 +667,7 @@ assert.doesNotMatch(packageSource, /runtime:workspace|runtime:project|code-serve
 assert.doesNotMatch(packageSource, /"d3-delaunay"|"gsap"|"three"|"@react-three\/fiber"|"@react-three\/drei"/);
 assert.match(packageSource, /"server": "node server\.mjs"/);
 assert.match(packageSource, /"start": "npm install && npm run build && npm run runtime:default && node server\.mjs"/);
-assert.match(packageSource, /"start:local": "npm install && npm run build && npm run runtime:all && JUDGE0_BASE_URL=http:\/\/127\.0\.0\.1:2358 node server\.mjs"/);
+assert.match(packageSource, /"start:local": "npm install && npm run build && npm run runtime:all && JUDGE0_BASE_URL=http:\/\/127\.0\.0\.1:\$\{JUDGE0_PORT:-2358\} node server\.mjs"/);
 assert.match(readmeSource, /npm start/);
 assert.match(readmeSource, /публичный Judge0/);
 assert.match(readmeSource, /npm run start:local/);
