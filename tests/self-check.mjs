@@ -553,6 +553,8 @@ assert.doesNotMatch(mascotAssistantSource, /body:has\(\.homeSurface\) \.mascotAs
 assert.match(serverSource, /JUDGE0_BASE_URL/);
 assert.match(serverSource, /function judge0BaseUrl/);
 assert.match(serverSource, /http:\/\/127\.0\.0\.1:2358/);
+assert.match(serverSource, /const host = process\.env\.HOST \|\| "127\.0\.0\.1"/);
+assert.doesNotMatch(serverSource, /ce\.judge0\.com/);
 assert.match(serverSource, /sandboxScript/);
 assert.match(serverSource, /function asciiJson/);
 assert.match(serverSource, /invalid_public_checks/);
@@ -678,6 +680,7 @@ assert.match(ciSource, /npm run build/);
 assert.doesNotMatch(ciSource, /deploy|workflow_dispatch/);
 
 const dockerfileSource = readFileSync(new URL("../Dockerfile", import.meta.url), "utf8");
+assert.match(dockerfileSource, /^ENV HOST=0\.0\.0\.0$/m);
 assert.match(dockerfileSource, /npm ci/);
 assert.match(dockerfileSource, /npm run build/);
 assert.match(dockerfileSource, /node", "server\.mjs"/);
@@ -742,7 +745,10 @@ assert.match(workspaceComposeSource, /judge0-server/);
 assert.match(workspaceComposeSource, /judge0-worker/);
 assert.match(workspaceComposeSource, /postgres:16\.2/);
 assert.match(workspaceComposeSource, /redis:7\.2\.4/);
+assert.match(workspaceComposeSource, /127\.0\.0\.1:\$\{FALKORDB_PORT:-6379\}:6379/);
+assert.match(workspaceComposeSource, /127\.0\.0\.1:\$\{GRAPH_MEMORY_PORT:-8008\}:8008/);
 assert.match(workspaceComposeSource, /127\.0\.0\.1:\$\{JUDGE0_PORT:-2358\}:2358/);
+assert.doesNotMatch(workspaceComposeSource, /ce\.judge0\.com/);
 assert.match(workspaceComposeSource, /memory_service\/Dockerfile/);
 assert.match(workspaceComposeSource, /FALKORDB_HOST: falkordb/);
 assert.match(workspaceComposeSource, /OPENAI_API_KEY: "\$\{OPENAI_API_KEY:-\}"/);

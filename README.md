@@ -1,147 +1,99 @@
 # CodeLearnML
 
-Локальный trainer по коду (ЛЛМ стек)
+Локальный тренажёр программирования с LLM-куратором, тестами, coding-задачами и графовой памятью.
 
-![Hero screen](assets/screenshots/hero.png)
+![Главный экран CodeLearnML](assets/screenshots/hero.png)
 
 ## Интерфейс
 
-### Чат с LLM-куратором
+### Чат
 
-![Чатовый интерфейс CodeLearnML](assets/screenshots/chat.png)
+![Чат с LLM-куратором](assets/screenshots/chat.png)
 
-### Профиль и активность
+### Активность
 
-![Годовая активность пользователя](assets/screenshots/activity.png)
+![Активность пользователя](assets/screenshots/activity.png)
 
 ### Тесты
 
-![Интерактивный тест CodeLearnML](assets/screenshots/tests.png)
+![Интерактивный тест](assets/screenshots/tests.png)
 
-### Задачи и выполнение кода
+### Задачи
 
-![Рабочее окно coding-задачи](assets/screenshots/task.png)
+![Редактор и выполнение кода](assets/screenshots/task.png)
 
-## Стек
+## Возможности
 
-- Frontend: React 19, Vite.
-- Backend: Node.js.
-- Хранилище: SQLite.
-- Graph memory: Python 3.12, FalkorDB.
-- Выполнение кода: локальный Judge0 CE, PostgreSQL и Redis.
-
+- чат с LLM-провайдерами;
+- генерация уроков, тестов и coding-задач;
+- выполнение Python и JavaScript в локальном Judge0 CE;
+- LLM-ревью решений;
+- локальная история и графовая память.
 
 ## Требования
 
-- Node.js 22+.
-- npm.
-- Python 3.12+ для `tests/memory-service-check.py` и опционального memory service.
-- Docker для container/runtime workflows.
+- Node.js 22+ и npm;
+- Docker;
+- Python 3.12+ для проверки Graph Memory.
 
 ## Запуск
 
 ```sh
+git clone https://github.com/averagedigital/learnloop-code.git
+cd learnloop-code
+cp .env.example .env
 npm start
 ```
 
-Команда установит Node.js-зависимости, соберёт frontend, поднимет FalkorDB, Graph Memory и локальный Judge0 со служебными PostgreSQL/Redis, затем запустит backend на `http://127.0.0.1:4173`.
-Для первого запуска Docker скачает необходимые образы; образ Judge0 большой, поэтому первый старт может занять заметное время. Последующие запуски используют локальный cache. На Apple Silicon Judge0 запускается через Docker-эмуляцию `linux/amd64`.
+`npm start` установит Node.js-зависимости, соберёт frontend, поднимет FalkorDB, Graph Memory и локальный Judge0 с PostgreSQL и Redis, затем запустит приложение на [http://127.0.0.1:4173](http://127.0.0.1:4173).
 
-Основные переменные:
+Первый запуск скачивает Docker-образы. Judge0 на Apple Silicon работает через эмуляцию `linux/amd64`.
 
-- `OPENAI_API_KEY`, `OPENAI_ADMIN_KEY`, `OPENROUTER_API_KEY`, `YANDEX_AI_STUDIO_API_KEY` - ключи провайдеров, используются только backend.
-- `YANDEX_AI_STUDIO_FOLDER_ID` - нужен для Yandex AI Studio.
-- `CODELEARN_ENV_PATH` - локальный env-файл, который обновляет Settings API. По умолчанию `./.env`.
-- `CODELEARN_DB_PATH` - путь к SQLite. По умолчанию `./data/codelearn.sqlite`.
-- `CODELEARN_SEED_DEV_DATA` - `true` только для локального bootstrap.
-- `JUDGE0_BASE_URL` - endpoint sandbox для `/api/execute`, по умолчанию локальный `http://127.0.0.1:2358`.
-- `GRAPH_MEMORY_URL` - URL graph memory service.
+## Настройка LLM
 
+Укажите в `.env` ключ и модель нужного провайдера:
 
-## Раздельный запуск для разработки
+- OpenAI: `OPENAI_API_KEY`, `OPENAI_MODEL`;
+- OpenRouter: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`;
+- Yandex AI Studio: `YANDEX_AI_STUDIO_API_KEY`, `YANDEX_AI_STUDIO_FOLDER_ID`, `YANDEX_AI_STUDIO_MODEL`.
 
-Frontend dev server:
+Ключи используются только backend. Полный список параметров находится в [`.env.example`](.env.example).
+
+## Команды
 
 ```sh
-npm run dev
-```
-
-Backend:
-
-```sh
-npm run build
-npm run server
-```
-
-Backend URL по умолчанию:
-
-```text
-http://127.0.0.1:4173
-```
-
-## Docker
-
-```sh
-docker build -t codelearn .
-docker run --rm -p 4173:4173 -v codelearn-data:/data -v codelearn-workspace:/app/workspace codelearn
-```
-
-Container хранит runtime `.env`, SQLite data и personality memory в `/data`.
-
-## Runtime services
-
-Graph memory runtime:
-
-```sh
-npm run runtime:memory
-```
-
-Все runtime services:
-
-```sh
+npm test          # тесты
+npm run build     # production-сборка
+npm run dev       # frontend для разработки
+npm run server    # собранное приложение без запуска Docker-сервисов
 npm run runtime:all
-```
-
-Команда поднимает FalkorDB, Graph Memory, Judge0 CE, PostgreSQL и Redis. API Judge0 доступен только локально на `127.0.0.1:2358`.
-
-Остановка runtime services:
-
-```sh
 npm run runtime:down
 ```
 
-## Проверки
+Runtime API:
 
-```sh
-npm test
-npm run build
-```
+- приложение: `http://127.0.0.1:4173`;
+- Judge0: `http://127.0.0.1:2358`;
+- Graph Memory: `http://127.0.0.1:8008`;
+- health: `GET /api/runtime/health`.
 
-## Основные API
+Сервисы по умолчанию публикуются только на `127.0.0.1`.
 
-- `GET /api/app-state` - текущий урок, задачи, progress, settings, memory и runtime state.
-- `POST /api/lessons` - импорт JSON-спеки урока из ответа ЛЛМ и создание workspace-файлов задачи.
-- `PATCH /api/tasks/:id/progress` - сохранение draft-кода и индекса подсказки.
-- `GET /api/tasks/:id/log` - история запусков задачи и assigned markdown.
-- `POST /api/tasks/:id/runs` - сохранение результата запуска задачи.
-- `GET /api/workspace/tasks/:taskId/files` - список workspace-файлов задачи.
-- `GET /api/workspace/tasks/:taskId/files/:path` - чтение workspace-файла задачи.
-- `GET|POST /api/memory/events` - чтение/создание memory review events.
-- `PATCH /api/memory/events/:id` - обновление review status memory event.
-- `POST /api/memory/graph-sync` - синхронизация accepted memory events в graph memory service.
-- `POST /api/memory/graph-search` - запрос к graph memory service.
-- `GET /api/runtime/health` - проверка опциональных runtime integrations.
-- `POST /api/execute` - запуск кода через Judge0-compatible sandbox.
-- `POST /api/models` - proxy для списка моделей провайдера.
-- `POST /api/responses` - proxy для LLM requests.
-- `GET|POST|DELETE /api/personality` - управление markdown personality memory.
+## Хранение данных
+
+- SQLite: `./data/codelearn.sqlite`;
+- workspace задач: `./workspace`;
+- настройки и ключи: `./.env`;
+- FalkorDB и Judge0 PostgreSQL: Docker volumes.
 
 ## Благодарности
 
-Спасибо открытым проектам, чьи специализированные решения стали частью CodeLearnML:
+- [CodeMirror](https://github.com/codemirror/dev) — редактор кода;
+- [Judge0 CE](https://github.com/judge0/judge0) — выполнение кода;
+- [FalkorDB](https://github.com/FalkorDB/FalkorDB) — графовая память.
 
-- [CodeMirror](https://github.com/codemirror/dev) — редактор кода и подсветка синтаксиса.
-- [Judge0 CE](https://github.com/judge0/judge0) — изолированное выполнение пользовательского кода.
-- [FalkorDB](https://github.com/FalkorDB/FalkorDB) — графовое хранилище памяти.
+Условия использования зависимостей приведены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Лицензии и условия использования перечислены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+## Лицензия
+
+[MIT](LICENSE)

@@ -15,7 +15,7 @@ try {
   // Local installs may start before .env exists; settings can create it later.
 }
 const port = Number(process.env.PORT || 4173);
-const host = process.env.HOST || "0.0.0.0";
+const host = process.env.HOST || "127.0.0.1";
 const personalityPath = process.env.PERSONALITY_PATH || "/data/personality.md";
 const dbPath = process.env.CODELEARN_DB_PATH || join(root, "data/codelearn.sqlite");
 const workspaceRoot = normalize(process.env.CODELEARN_WORKSPACE_ROOT || join(root, "workspace"));
