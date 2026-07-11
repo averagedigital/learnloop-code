@@ -1079,6 +1079,9 @@ async function readRuntimeHealth() {
 }
 
 function judge0BaseUrl() {
+  if (process.env.JUDGE0_LOCAL === "true") {
+    return `http://127.0.0.1:${process.env.JUDGE0_PORT || 2358}`;
+  }
   return String(process.env.JUDGE0_BASE_URL || "https://ce.judge0.com").trim();
 }
 

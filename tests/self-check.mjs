@@ -553,6 +553,8 @@ assert.doesNotMatch(mascotAssistantSource, /body:has\(\.homeSurface\) \.mascotAs
 assert.match(serverSource, /JUDGE0_BASE_URL/);
 assert.match(serverSource, /function judge0BaseUrl/);
 assert.match(serverSource, /function judge0Mode/);
+assert.match(serverSource, /process\.env\.JUDGE0_LOCAL === "true"/);
+assert.match(serverSource, /http:\/\/127\.0\.0\.1:\$\{process\.env\.JUDGE0_PORT \|\| 2358\}/);
 assert.match(serverSource, /127\\\.0\\\.0\\\.1\|localhost/);
 assert.match(serverSource, /const host = process\.env\.HOST \|\| "127\.0\.0\.1"/);
 assert.match(serverSource, /https:\/\/ce\.judge0\.com/);
@@ -667,7 +669,7 @@ assert.doesNotMatch(packageSource, /runtime:workspace|runtime:project|code-serve
 assert.doesNotMatch(packageSource, /"d3-delaunay"|"gsap"|"three"|"@react-three\/fiber"|"@react-three\/drei"/);
 assert.match(packageSource, /"server": "node server\.mjs"/);
 assert.match(packageSource, /"start": "npm install && npm run build && npm run runtime:default && node server\.mjs"/);
-assert.match(packageSource, /"start:local": "npm install && npm run build && npm run runtime:all && JUDGE0_BASE_URL=http:\/\/127\.0\.0\.1:\$\{JUDGE0_PORT:-2358\} node server\.mjs"/);
+assert.match(packageSource, /"start:local": "npm install && npm run build && npm run runtime:all && JUDGE0_LOCAL=true node server\.mjs"/);
 assert.match(readmeSource, /npm start/);
 assert.match(readmeSource, /публичный Judge0/);
 assert.match(readmeSource, /npm run start:local/);
