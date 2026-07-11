@@ -652,7 +652,7 @@ assert.equal(JSON.parse(packageSource).license, "MIT");
 assert.equal(existsSync(new URL("../LICENSE", import.meta.url)), true);
 assert.equal(existsSync(new URL("../THIRD_PARTY_NOTICES.md", import.meta.url)), true);
 assert.equal(existsSync(new URL("../SECURITY.md", import.meta.url)), true);
-assert.match(readmeSource, /0\.0\.2 Beta/);
+assert.doesNotMatch(readmeSource, /hardened multi-tenant production deployment/);
 assert.match(packageSource, /"vite"/);
 assert.match(packageSource, /"react"/);
 assert.match(packageSource, /"@vitejs\/plugin-react"/);

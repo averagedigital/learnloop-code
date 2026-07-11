@@ -2,8 +2,6 @@
 
 Локальный trainer по коду (ЛЛМ стек)
 
-> **Статус: 0.0.2 Beta.** Версия предназначена для локальной оценки. Это не hardened multi-tenant production deployment: Judge0 использует privileged Docker-контейнеры и должен оставаться доступным только на `127.0.0.1`.
-
 ![Hero screen](assets/screenshots/hero.png)
 
 ## Интерфейс
