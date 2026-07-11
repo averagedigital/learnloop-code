@@ -37,7 +37,7 @@ const graphSettingEnv = {
   graphEmbeddingModel: "GRAPH_EMBEDDING_MODEL",
   graphEmbeddingDim: "GRAPH_EMBEDDING_DIM"
 };
-const runtimeComposeArgs = ["compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build", "--remove-orphans", "falkordb", "graph-memory", "judge0-db", "judge0-redis", "judge0-server", "judge0-worker"];
+const runtimeComposeArgs = ["compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build", "--remove-orphans", "falkordb", "graph-memory"];
 const mascotIds = new Set(["organic_spiky_concept", "05_laptop_spiky"]);
 const memoryEventKinds = new Set(["coding_habit", "weak_topic", "strong_topic", "skill_observation", "response_preference", "project_reference"]);
 const autonomousMemoryKinds = {
@@ -1070,15 +1070,21 @@ async function runtimeHealth(_req, res) {
 async function readRuntimeHealth() {
   const judgeUrl = judge0BaseUrl();
   const graphUrl = graphMemoryBaseUrl();
-  const [judge, graph] = await Promise.all([
+  const [judgeProbe, graph] = await Promise.all([
     runtimeProbe("judge0", judgeUrl, ""),
     runtimeProbe("graphMemory", graphUrl, "/health")
   ]);
+  const judge = { ...judgeProbe, mode: judge0Mode(judgeUrl) };
   return { ok: [judge, graph].every((item) => !item.configured || item.ok), judge, graph };
 }
 
 function judge0BaseUrl() {
-  return String(process.env.JUDGE0_BASE_URL || "http://127.0.0.1:2358").trim();
+  return String(process.env.JUDGE0_BASE_URL || "https://ce.judge0.com").trim();
+}
+
+function judge0Mode(baseUrl) {
+  if (baseUrl === "https://ce.judge0.com") return "public";
+  return /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(baseUrl) ? "local" : "custom";
 }
 
 async function runtimeStart(req, res) {

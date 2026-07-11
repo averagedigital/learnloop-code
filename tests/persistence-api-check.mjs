@@ -826,7 +826,7 @@ try {
   assert.equal(runtimeStart.ok, true);
   assert.deepEqual((await readFile(dockerCallLog, "utf8")).trim().split("\n"), [
     "compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build", "--remove-orphans",
-    "falkordb", "graph-memory", "judge0-db", "judge0-redis", "judge0-server", "judge0-worker"
+    "falkordb", "graph-memory"
   ]);
   const arbitraryRuntimeStart = await fetch(`http://127.0.0.1:${port}/api/runtime/start`, {
     method: "POST",

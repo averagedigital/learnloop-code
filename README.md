@@ -26,7 +26,7 @@
 
 - чат с LLM-провайдерами;
 - генерация уроков, тестов и coding-задач;
-- выполнение Python и JavaScript в локальном Judge0 CE;
+- выполнение Python и JavaScript через Judge0 CE;
 - LLM-ревью решений;
 - локальная история и графовая память.
 
@@ -45,9 +45,15 @@ cp .env.example .env
 npm start
 ```
 
-`npm start` установит Node.js-зависимости, соберёт frontend, поднимет FalkorDB, Graph Memory и локальный Judge0 с PostgreSQL и Redis, затем запустит приложение на [http://127.0.0.1:4173](http://127.0.0.1:4173).
+`npm start` установит Node.js-зависимости, соберёт frontend, поднимет FalkorDB и Graph Memory, затем запустит приложение на [http://127.0.0.1:4173](http://127.0.0.1:4173). Код выполняется через публичный Judge0 и отправляется стороннему сервису.
 
-Первый запуск скачивает Docker-образы. Judge0 на Apple Silicon работает через эмуляцию `linux/amd64`.
+Для полностью локального выполнения:
+
+```sh
+npm run start:local
+```
+
+Эта команда дополнительно скачивает и запускает Judge0, PostgreSQL и Redis. На Apple Silicon Judge0 работает через эмуляцию `linux/amd64`.
 
 ## Настройка LLM
 
@@ -66,6 +72,7 @@ npm test          # тесты
 npm run build     # production-сборка
 npm run dev       # frontend для разработки
 npm run server    # собранное приложение без запуска Docker-сервисов
+npm run start:local
 npm run runtime:all
 npm run runtime:down
 ```
@@ -73,7 +80,7 @@ npm run runtime:down
 Runtime API:
 
 - приложение: `http://127.0.0.1:4173`;
-- Judge0: `http://127.0.0.1:2358`;
+- локальный Judge0: `http://127.0.0.1:2358`;
 - Graph Memory: `http://127.0.0.1:8008`;
 - health: `GET /api/runtime/health`.
 

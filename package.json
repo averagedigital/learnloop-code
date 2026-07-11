@@ -7,12 +7,14 @@
     "test": "tests"
   },
   "scripts": {
-    "start": "npm install && npm run build && npm run runtime:all && node server.mjs",
+    "start": "npm install && npm run build && npm run runtime:default && node server.mjs",
+    "start:local": "npm install && npm run build && npm run runtime:all && JUDGE0_BASE_URL=http://127.0.0.1:2358 node server.mjs",
     "server": "node server.mjs",
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "runtime:memory": "docker compose -f docker-compose.workspace.yml up falkordb graph-memory",
+    "runtime:default": "docker compose -f docker-compose.workspace.yml stop judge0-server judge0-worker judge0-db judge0-redis && docker compose -f docker-compose.workspace.yml up -d --build --remove-orphans falkordb graph-memory",
     "runtime:all": "docker compose -f docker-compose.workspace.yml up -d --build --remove-orphans falkordb graph-memory judge0-db judge0-redis judge0-server judge0-worker",
     "runtime:down": "docker compose -f docker-compose.workspace.yml down",
     "test": "node tests/self-check.mjs && node tests/persistence-api-check.mjs && node tests/chat-tool-loop-check.mjs && node tests/chat-stream-check.mjs && node tests/coding-task-check.mjs && python3 tests/memory-service-check.py"

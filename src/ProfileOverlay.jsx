@@ -592,6 +592,9 @@ export default function ProfileOverlay({ open, onClose, app, runtime, requestJso
                   ) : null}
                 </div>
                 <div className="settingsBlock">
+                  <div className="settingsBlockTitle"><div><h4>Выполнение кода</h4><p>{runtime?.judge?.mode === "public" ? "Публичный Judge0: код отправляется стороннему сервису." : runtime?.judge?.mode === "local" ? "Локальный Judge0: код выполняется в Docker на этом компьютере." : "Пользовательский Judge0-compatible endpoint."}</p></div><span className={runtime?.judge?.ok ? "configured" : ""}>{runtime?.judge?.ok ? "online" : "offline"}</span></div>
+                </div>
+                <div className="settingsBlock">
                   <div className="settingsBlockTitle"><div><h4>Graph Memory</h4><p>Чатовая LLM формирует связи, backend сохраняет их в FalkorDB. Здесь нужен только эмбеддер для поиска.</p></div><span className={runtime?.graph?.ok ? "configured" : ""}>{runtime?.graph?.ok ? "online" : runtime?.graph?.configured ? "offline" : "setup"}</span></div>
                   <div className="fieldGrid two">
                     <Field label="Embedding provider"><select value={form.graphEmbeddingProvider || "openrouter"} onChange={(event) => chooseGraphProvider(event.target.value)}>{Object.entries(graphProviders).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select></Field>
