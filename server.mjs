@@ -37,7 +37,7 @@ const graphSettingEnv = {
   graphEmbeddingModel: "GRAPH_EMBEDDING_MODEL",
   graphEmbeddingDim: "GRAPH_EMBEDDING_DIM"
 };
-const runtimeComposeArgs = ["compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build", "--remove-orphans", "falkordb", "graph-memory"];
+const runtimeComposeArgs = ["compose", "-f", "docker-compose.workspace.yml", "up", "-d", "--build", "--remove-orphans", "falkordb", "graph-memory", "judge0-db", "judge0-redis", "judge0-server", "judge0-worker"];
 const mascotIds = new Set(["organic_spiky_concept", "05_laptop_spiky"]);
 const memoryEventKinds = new Set(["coding_habit", "weak_topic", "strong_topic", "skill_observation", "response_preference", "project_reference"]);
 const autonomousMemoryKinds = {
@@ -1078,7 +1078,7 @@ async function readRuntimeHealth() {
 }
 
 function judge0BaseUrl() {
-  return String(process.env.JUDGE0_BASE_URL || "https://ce.judge0.com").trim();
+  return String(process.env.JUDGE0_BASE_URL || "http://127.0.0.1:2358").trim();
 }
 
 async function runtimeStart(req, res) {

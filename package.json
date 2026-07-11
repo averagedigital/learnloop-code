@@ -1,6 +1,6 @@
 {
   "name": "coding_linteral",
-  "version": "1.0.0",
+  "version": "0.0.2",
   "description": "Local coding-practice trainer with LLM-generated lessons and deterministic checks.",
   "main": "server.mjs",
   "directories": {
@@ -13,13 +13,13 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "runtime:memory": "docker compose -f docker-compose.workspace.yml up falkordb graph-memory",
-    "runtime:all": "docker compose -f docker-compose.workspace.yml up -d --build --remove-orphans falkordb graph-memory",
+    "runtime:all": "docker compose -f docker-compose.workspace.yml up -d --build --remove-orphans falkordb graph-memory judge0-db judge0-redis judge0-server judge0-worker",
     "runtime:down": "docker compose -f docker-compose.workspace.yml down",
     "test": "node tests/self-check.mjs && node tests/persistence-api-check.mjs && node tests/chat-tool-loop-check.mjs && node tests/chat-stream-check.mjs && node tests/coding-task-check.mjs && python3 tests/memory-service-check.py"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@codemirror/commands": "^6.10.4",

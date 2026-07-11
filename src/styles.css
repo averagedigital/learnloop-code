@@ -1489,7 +1489,7 @@ button:disabled {
 .taskTutorThread {
   display: grid;
   gap: 10px;
-  max-height: min(52vh, 560px);
+  max-height: min(80vh, 900px);
   padding: 14px;
   overflow-y: auto;
 }

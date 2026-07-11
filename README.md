@@ -2,24 +2,35 @@
 
 Локальный trainer по коду (ЛЛМ стек)
 
+> **Статус: 0.0.2 Beta.** Версия предназначена для локальной оценки. Это не hardened multi-tenant production deployment: Judge0 использует privileged Docker-контейнеры и должен оставаться доступным только на `127.0.0.1`.
+
 ![Hero screen](assets/screenshots/hero.png)
 
 ## Интерфейс
 
 ### Чат с LLM-куратором
 
-![Чатовый интерфейс CodeLearnML](assets/screenshots/chat.jpg)
+![Чатовый интерфейс CodeLearnML](assets/screenshots/chat.png)
 
 ### Профиль и активность
 
-![Годовая активность пользователя](assets/screenshots/activity.jpg)
+![Годовая активность пользователя](assets/screenshots/activity.png)
+
+### Тесты
+
+![Интерактивный тест CodeLearnML](assets/screenshots/tests.png)
+
+### Задачи и выполнение кода
+
+![Рабочее окно coding-задачи](assets/screenshots/task.png)
 
 ## Стек
 
 - Frontend: React 19, Vite.
 - Backend: Node.js.
 - Хранилище: SQLite.
-- Опциональная graph memory service: Python 3.12, FalkorDB.
+- Graph memory: Python 3.12, FalkorDB.
+- Выполнение кода: локальный Judge0 CE, PostgreSQL и Redis.
 
 
 ## Требования
@@ -35,8 +46,8 @@
 npm start
 ```
 
-Команда установит Node.js-зависимости, соберёт frontend, поднимет Docker runtime и запустит backend на `http://127.0.0.1:4173`.
-Для первого запуска Docker скачает необходимые образы; последующие запуски используют локальный cache.
+Команда установит Node.js-зависимости, соберёт frontend, поднимет FalkorDB, Graph Memory и локальный Judge0 со служебными PostgreSQL/Redis, затем запустит backend на `http://127.0.0.1:4173`.
+Для первого запуска Docker скачает необходимые образы; образ Judge0 большой, поэтому первый старт может занять заметное время. Последующие запуски используют локальный cache. На Apple Silicon Judge0 запускается через Docker-эмуляцию `linux/amd64`.
 
 Основные переменные:
 
@@ -45,8 +56,8 @@ npm start
 - `CODELEARN_ENV_PATH` - локальный env-файл, который обновляет Settings API. По умолчанию `./.env`.
 - `CODELEARN_DB_PATH` - путь к SQLite. По умолчанию `./data/codelearn.sqlite`.
 - `CODELEARN_SEED_DEV_DATA` - `true` только для локального bootstrap.
-- `JUDGE0_BASE_URL` - внешний sandbox endpoint для `/api/execute`.
-- `GRAPH_MEMORY_URL` - URL опционального graph memory service.
+- `JUDGE0_BASE_URL` - endpoint sandbox для `/api/execute`, по умолчанию локальный `http://127.0.0.1:2358`.
+- `GRAPH_MEMORY_URL` - URL graph memory service.
 
 
 ## Раздельный запуск для разработки
@@ -79,7 +90,7 @@ docker run --rm -p 4173:4173 -v codelearn-data:/data -v codelearn-workspace:/app
 
 Container хранит runtime `.env`, SQLite data и personality memory в `/data`.
 
-## Опциональные runtime services
+## Runtime services
 
 Graph memory runtime:
 
@@ -92,6 +103,8 @@ npm run runtime:memory
 ```sh
 npm run runtime:all
 ```
+
+Команда поднимает FalkorDB, Graph Memory, Judge0 CE, PostgreSQL и Redis. API Judge0 доступен только локально на `127.0.0.1:2358`.
 
 Остановка runtime services:
 
@@ -124,3 +137,13 @@ npm run build
 - `POST /api/models` - proxy для списка моделей провайдера.
 - `POST /api/responses` - proxy для LLM requests.
 - `GET|POST|DELETE /api/personality` - управление markdown personality memory.
+
+## Благодарности
+
+Спасибо открытым проектам, чьи специализированные решения стали частью CodeLearnML:
+
+- [CodeMirror](https://github.com/codemirror/dev) — редактор кода и подсветка синтаксиса.
+- [Judge0 CE](https://github.com/judge0/judge0) — изолированное выполнение пользовательского кода.
+- [FalkorDB](https://github.com/FalkorDB/FalkorDB) — графовое хранилище памяти.
+
+Лицензии и условия использования перечислены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

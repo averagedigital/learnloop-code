@@ -39,5 +39,54 @@ services:
       falkordb:
         condition: service_healthy
 
+  judge0-db:
+    image: postgres:16.2
+    env_file: config/judge0.conf
+    volumes:
+      - judge0-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  judge0-redis:
+    image: redis:7.2.4
+    env_file: config/judge0.conf
+    command: ["bash", "-c", "docker-entrypoint.sh --appendonly no --requirepass \"$$REDIS_PASSWORD\""]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  judge0-server:
+    image: judge0/judge0:1.13.1
+    platform: linux/amd64
+    privileged: true
+    volumes:
+      - ./config/judge0.conf:/judge0.conf:ro
+    ports:
+      - "127.0.0.1:${JUDGE0_PORT:-2358}:2358"
+    depends_on:
+      judge0-db:
+        condition: service_healthy
+      judge0-redis:
+        condition: service_healthy
+
+  judge0-worker:
+    image: judge0/judge0:1.13.1
+    platform: linux/amd64
+    command: ["./scripts/workers"]
+    privileged: true
+    volumes:
+      - ./config/judge0.conf:/judge0.conf:ro
+    depends_on:
+      judge0-db:
+        condition: service_healthy
+      judge0-redis:
+        condition: service_healthy
+
 volumes:
   falkordb-data:
+  judge0-db-data:
