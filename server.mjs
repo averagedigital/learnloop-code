@@ -2426,6 +2426,8 @@ async function runSandbox(source, publicChecks, limits = {}) {
       memory_limit: memoryKb,
       max_processes_and_or_threads: Number(process.env.SANDBOX_MAX_PROCESSES || 16),
       max_file_size: 1024,
+      enable_per_process_and_thread_time_limit: true,
+      enable_per_process_and_thread_memory_limit: true,
       enable_network: String(process.env.SANDBOX_NETWORK_ENABLED || "false") === "true"
     })
   });

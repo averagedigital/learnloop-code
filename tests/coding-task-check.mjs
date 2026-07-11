@@ -47,6 +47,8 @@ try {
   assert.equal(judgeSubmissions.length, 2);
   assert.equal(judgeSubmissions.every((submission) => submission.enable_network === false), true);
   assert.equal(judgeSubmissions.every((submission) => submission.max_processes_and_or_threads === 16), true);
+  assert.equal(judgeSubmissions.every((submission) => submission.enable_per_process_and_thread_time_limit === true), true);
+  assert.equal(judgeSubmissions.every((submission) => submission.enable_per_process_and_thread_memory_limit === true), true);
 
   const review = await streamAsk("review-solution", taskId);
   assert.equal(review.complete.message.content, "LLM review: код исполняется, состояние замыкания реализовано корректно.");
